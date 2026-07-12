@@ -51,6 +51,7 @@ Em **Environment Variables**, criar as três (todas obrigatórias — o compose 
 
 | Variável | Valor |
 |---|---|
+| `SERVICE_FQDN_MLFLOW_5000` | `https://mlflow.<IP-DO-VPS>.sslip.io` (ver passo 3) |
 | `MLFLOW_ADMIN_USERNAME` | `datathon` |
 | `MLFLOW_ADMIN_PASSWORD` | uma senha forte — é a que o time vai usar |
 | `MLFLOW_FLASK_SERVER_SECRET_KEY` | gere com `openssl rand -hex 32` |
@@ -58,11 +59,32 @@ Em **Environment Variables**, criar as três (todas obrigatórias — o compose 
 > A `SECRET_KEY` precisa ser **fixa**. Se mudar a cada deploy, as sessões abertas do time são
 > invalidadas. Gere uma vez e não mexa mais.
 
-### 3. Domínio
+### 3. Domínio e HTTPS
 
-O Coolify preenche o `SERVICE_FQDN_MLFLOW_5000` sozinho e emite o certificado. Se quiser um
-subdomínio específico (ex.: `mlflow.seu-dominio.com`), configure em **Domains** — e garanta que o
-DNS aponte para o IP do VPS antes, senão o certificado não é emitido.
+> ⚠️ **Não use o campo "Domains".** Para recursos Docker Compose, o Coolify **regenera** esse campo
+> a partir da variável mágica `SERVICE_FQDN_MLFLOW_5000` (declarada no compose) — o que você digitar
+> ali é sobrescrito no save, e volta um domínio automático sem HTTPS.
+
+O domínio se define como **variável de ambiente**, junto das outras:
+
+```
+SERVICE_FQDN_MLFLOW_5000=https://mlflow.<SEU-IP-COM-PONTOS>.sslip.io
+```
+
+O `https://` no começo é o que faz o Traefik pedir o certificado ao Let's Encrypt. Sem ele, serve
+em HTTP puro — e aí o basic-auth trafega usuário e senha em base64, que é reversível.
+
+**Sem domínio próprio?** Use o [sslip.io](https://sslip.io): ele resolve qualquer hostname que
+contenha um IP para aquele IP, sem cadastro. Se o VPS é `203.0.113.45`, então
+`mlflow.203.0.113.45.sslip.io` já aponta para ele. E como o `sslip.io` está na Public Suffix List, o
+Let's Encrypt emite certificado normalmente — é HTTPS real.
+
+**Pré-requisitos para o certificado sair:**
+- portas **80 e 443** abertas no firewall (a 80 é obrigatória — é por ela que o Let's Encrypt valida);
+- e-mail do Let's Encrypt configurado nas **Settings** do Coolify (é o passo mais esquecido).
+
+Se depois de ~2 min o certificado ainda for `CN = TRAEFIK DEFAULT CERT` (autoassinado), é porque a
+rota não foi registrada ou a validação falhou — confira os dois itens acima.
 
 ### 4. Deploy
 
