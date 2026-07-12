@@ -12,14 +12,20 @@ services:
     build: .
     restart: unless-stopped
 
-    # Nomes "pelados" de proposito (sem =valor). Se o valor vier fixado aqui, o Coolify marca a
-    # variavel como somente-leitura no painel e voce nao consegue mais edita-la. Assim, todas
-    # aparecem editaveis em Environment Variables. O entrypoint.sh valida se faltou alguma.
+    # NAO declarar SERVICE_FQDN_MLFLOW_5000 aqui. Essa variavel "magica" do Coolify e gerada e
+    # TRAVADA por ele: uma vez criada, nao da mais para editar, e ela sequestra o campo "Domains"
+    # da interface (o que voce digita la e sobrescrito no save). Sem ela, o campo Domains volta a
+    # funcionar e o dominio se define pela UI:
+    #
+    #     Domains for mlflow:  https://<host>:5000
+    #
+    # O ":5000" nao e a porta publica (essa continua sendo a 443) -- e a porta INTERNA do container
+    # para onde o Traefik deve encaminhar. Sem ela o Coolify assume a 80, nao acha ninguem
+    # escutando e devolve 503.
+    #
+    # Os nomes abaixo vao "pelados" (sem =valor) de proposito: valor fixado no compose tambem faz o
+    # Coolify marcar a variavel como somente-leitura. O entrypoint.sh valida se faltou alguma.
     environment:
-      # Dominio: definir como SERVICE_FQDN_MLFLOW_5000=https://... no painel.
-      # (Nao use o campo "Domains" -- para compose o Coolify o regenera a partir desta variavel.)
-      - SERVICE_FQDN_MLFLOW_5000
-
       # Credenciais do basic-auth. Definir no painel do Coolify.
       - MLFLOW_ADMIN_USERNAME
       - MLFLOW_ADMIN_PASSWORD

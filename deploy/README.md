@@ -51,28 +51,37 @@ Em **Environment Variables**, criar as três (todas obrigatórias — o compose 
 
 | Variável | Valor |
 |---|---|
-| `SERVICE_FQDN_MLFLOW_5000` | `https://mlflow.<IP-DO-VPS>.sslip.io` (ver passo 3) |
 | `MLFLOW_ADMIN_USERNAME` | `datathon` |
 | `MLFLOW_ADMIN_PASSWORD` | uma senha forte — é a que o time vai usar |
 | `MLFLOW_FLASK_SERVER_SECRET_KEY` | gere com `openssl rand -hex 32` |
+
+O domínio **não** entra aqui — ele vai no campo Domains (passo 3).
 
 > A `SECRET_KEY` precisa ser **fixa**. Se mudar a cada deploy, as sessões abertas do time são
 > invalidadas. Gere uma vez e não mexa mais.
 
 ### 3. Domínio e HTTPS
 
-> ⚠️ **Não use o campo "Domains".** Para recursos Docker Compose, o Coolify **regenera** esse campo
-> a partir da variável mágica `SERVICE_FQDN_MLFLOW_5000` (declarada no compose) — o que você digitar
-> ali é sobrescrito no save, e volta um domínio automático sem HTTPS.
-
-O domínio se define como **variável de ambiente**, junto das outras:
+O domínio se define no campo **Domains** do serviço `mlflow`, **com a porta interna no final**:
 
 ```
-SERVICE_FQDN_MLFLOW_5000=https://mlflow.<SEU-IP-COM-PONTOS>.sslip.io
+https://mlflow.<SEU-IP-COM-PONTOS>.sslip.io:5000
 ```
 
-O `https://` no começo é o que faz o Traefik pedir o certificado ao Let's Encrypt. Sem ele, serve
-em HTTP puro — e aí o basic-auth trafega usuário e senha em base64, que é reversível.
+Dois detalhes que fazem toda a diferença:
+
+- **`https://` no começo** — é o que faz o Traefik pedir o certificado ao Let's Encrypt. Sem ele,
+  serve em HTTP puro, e aí o basic-auth trafega usuário e senha em base64, que é reversível.
+- **`:5000` no final** — não é a porta pública (essa continua sendo a 443). É a porta **interna do
+  container** para onde o Traefik encaminha. Sem ela o Coolify assume a 80, não acha ninguém
+  escutando e devolve **503** (mesmo com o container saudável).
+
+> ⚠️ **Não declare `SERVICE_FQDN_MLFLOW_5000` no compose nem crie essa variável no painel.** Essa
+> "variável mágica" do Coolify é gerada e **travada** por ele: depois de criada não dá mais para
+> editar, e ela sequestra o campo Domains (o que você digita ali é sobrescrito no save). Foi por
+> isso que a removemos do `docker-compose.yml`. Se ela já existir no seu recurso, **apague-a** (junto
+> com `SERVICE_URL_MLFLOW`) e faça um **Redeploy** completo — os labels do Traefik só são regerados
+> no deploy, um Restart reaproveita os antigos.
 
 **Sem domínio próprio?** Use o [sslip.io](https://sslip.io): ele resolve qualquer hostname que
 contenha um IP para aquele IP, sem cadastro. Se o VPS é `203.0.113.45`, então
