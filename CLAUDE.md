@@ -55,7 +55,7 @@ uv sync                                   # install the venv from the lockfile
 uv run jupyter lab                        # work in notebooks/
 uv run python -m src.data_prep            # Etapa 2: raw → bandit_frame.parquet + preprocessor.joblib
 uv run pytest -q                          # tests (tests/ still empty)
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # MLflow UI → localhost:5000
+uv run mlflow-ui                          # MLflow UI → localhost:5000
 uv add <package>                          # commit pyproject.toml + uv.lock together
 ```
 
@@ -68,12 +68,14 @@ once Etapa 5 exists.
   project pinned `pandas>=3.0.3`, uv silently resolved `mlflow` down to **1.27.0** (a 2022 release),
   which is incompatible with protobuf 7 — `import mlflow` raised `ImportError` and `pytest` could not
   even collect. Bumping pandas to 3.x will silently break MLflow again.
-- **MLflow uses a SQLite backend (`mlflow.db`), not the `mlruns/` file store.** MLflow 3 deprecated
-  the filesystem tracking backend and refuses it outright. The plan's original `mlruns/` layout is
-  therefore obsolete; `mlruns/` now only holds artifacts.
+- **MLflow uses a SQLite backend, not the `mlruns/` file store.** MLflow 3 deprecated the filesystem
+  tracking backend and refuses it outright, so the plan's original `mlruns/` layout is obsolete. The
+  DB and the artifacts both live under `mlruns/` (`mlruns/mlflow.db` + `mlruns/artifacts/`), gitignored.
 - **Always configure MLflow through `src.tracking.setup_mlflow(experiment)`.** MLflow's default store
   is relative to the *cwd*, so a script run from the repo root and a notebook run from `notebooks/`
   would log to two different databases. `setup_mlflow` anchors the store at the repo root.
+- **`[project.scripts]` needs the `[build-system]` block.** Without it uv treats the project as
+  "virtual" and installs nothing — the `mlflow-ui` command would not exist.
 - Notebook code must work on **pandas 2**: `select_dtypes(include=["str"])` is pandas-3-only, use
   `include=["object", "category"]`.
 

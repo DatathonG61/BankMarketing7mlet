@@ -104,7 +104,7 @@ uv sync                                   # cria o .venv a partir do lockfile
 uv run jupyter lab                        # abre os notebooks
 uv run python -m src.data_prep            # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
 uv run pytest -q                          # testes
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # UI do MLflow (localhost:5000)
+uv run mlflow-ui                          # abre a UI do MLflow (localhost:5000)
 ```
 
 Requer Python >= 3.13. O CSV bruto já está em `data/raw/`; se faltar, o notebook de EDA o baixa do
@@ -148,13 +148,14 @@ isso resolve:
   notebook rodado de `notebooks/` gravariam em bancos diferentes. `setup_mlflow` ancora o store na
   raiz do repositório.
 - O **MLflow 3 descontinuou o file store `mlruns/`** (que o plano original previa) e recusa o
-  backend de filesystem. Usamos SQLite (`mlflow.db`); `mlruns/` guarda só os artefatos.
+  backend de filesystem. Usamos SQLite. Banco e artefatos ficam ambos sob `mlruns/`
+  (`mlruns/mlflow.db` + `mlruns/artifacts/`), fora do git.
 
 A Etapa 2 já loga (parâmetros da limpeza, taxa-base, conversão por braço, `preprocessor.joblib` e
 `bandit_frame.parquet` como artefatos). Ver a UI com:
 
 ```bash
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+uv run mlflow-ui        # localhost:5000 — ou `uv run mlflow-ui 5001` para outra porta
 ```
 
 <!-- TODO Bertelli: instrumentar a Etapa 3 (priors, epsilon, seed, regret, n_matched) e escrever o
@@ -205,7 +206,9 @@ models/
   bandit_state.json             # estado do bandit (Etapa 5) — ainda não existe
 reports/figures/                # gráficos usados no README e no vídeo
 tests/                          # pytest (Etapa 4) — ainda vazio
-mlflow.db / mlruns/             # MLflow: banco + artefatos (não versionados)
+mlruns/
+  mlflow.db                     # MLflow: banco sqlite + artefatos (não versionado)
+  artifacts/
 ```
 
 `src/` existe justamente para que a API, a simulação do bandit e a avaliação chamem **as mesmas**
