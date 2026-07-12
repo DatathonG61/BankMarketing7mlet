@@ -85,12 +85,17 @@ Ambiente gerenciado com [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv
 ```bash
 uv sync                                   # cria o .venv a partir do lockfile
 uv run jupyter lab                        # abre os notebooks
+uv run python -m src.data_prep            # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
 uv run pytest -q                          # testes
-uv run uvicorn src.api:app --reload       # sobe a API (docs em /docs)
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db   # UI do MLflow (localhost:5000)
 ```
 
 Requer Python >= 3.13. O CSV bruto já está em `data/raw/`; se faltar, o notebook de EDA o baixa do
 Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
+
+> **Estado atual: Etapas 0, 1 e 2 concluídas.** `src/bandit.py` (Etapa 3) e `src/api.py` (Etapa 5)
+> ainda são esqueletos — o comando `uv run uvicorn src.api:app --reload` só funcionará depois da
+> Etapa 5.
 
 <!-- TODO Matheus: exemplos de curl para /recommend e /feedback + screenshot do Swagger -->
 
