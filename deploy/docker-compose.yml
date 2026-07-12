@@ -1,0 +1,55 @@
+# Servidor MLflow compartilhado do grupo — deploy via Coolify.
+#
+# O Coolify ja cuida do proxy reverso, do dominio e do HTTPS (certificado automatico). Por isso
+# aqui NAO publicamos portas nem subimos um Caddy proprio: isso brigaria com o proxy dele pelas
+# portas 80/443. So expomos a 5000 na rede interna e deixamos o Coolify rotear.
+#
+# A autenticacao usa o basic-auth nativo do MLflow (--app-name basic-auth): sem isso, qualquer um
+# com a URL poderia ler e apagar os experimentos do grupo.
+
+services:
+  mlflow:
+    build: .
+    restart: unless-stopped
+
+    environment:
+      # Magic do Coolify: gera o dominio e aponta o proxy para a porta 5000 deste servico.
+      - SERVICE_FQDN_MLFLOW_5000
+
+      # Usuario admin inicial do basic-auth. Definir no painel do Coolify (Environment Variables).
+      - MLFLOW_AUTH_CONFIG_PATH=/mlflow/auth.ini
+      - MLFLOW_ADMIN_USERNAME=${MLFLOW_ADMIN_USERNAME:?defina no Coolify}
+      - MLFLOW_ADMIN_PASSWORD=${MLFLOW_ADMIN_PASSWORD:?defina no Coolify}
+
+      # Exigida pelo basic-auth (protecao CSRF). Qualquer string longa e aleatoria serve, mas ela
+      # precisa ser FIXA: se mudar a cada deploy, as sessoes abertas do time sao invalidadas.
+      # Gerar com: openssl rand -hex 32
+      - MLFLOW_FLASK_SERVER_SECRET_KEY=${MLFLOW_FLASK_SERVER_SECRET_KEY:?defina no Coolify}
+
+    expose:
+      - "5000"
+
+    volumes:
+      # Banco, artefatos e usuarios persistem no disco do VPS, fora do container.
+      - mlflow-data:/mlflow
+
+    # entrypoint.sh gera o auth.ini a partir das env vars antes de subir o servidor.
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --app-name basic-auth
+      --host 0.0.0.0
+      --port 5000
+      --allowed-hosts '*'
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  mlflow-data:

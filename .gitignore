@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# MLflow: banco sqlite + artefatos. Local e cresce rapido -- nao versionar.
+mlruns/
+
+# Kaggle credentials
+kaggle.json
