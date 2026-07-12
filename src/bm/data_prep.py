@@ -166,7 +166,7 @@ def run_pipeline(
     """
     import mlflow
 
-    from src.tracking import setup_mlflow
+    from src.bm.tracking import setup_mlflow
 
     processed_dir, models_dir = Path(processed_dir), Path(models_dir)
     processed_dir.mkdir(parents=True, exist_ok=True)
