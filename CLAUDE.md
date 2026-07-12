@@ -69,11 +69,21 @@ once Etapa 5 exists.
   which is incompatible with protobuf 7 — `import mlflow` raised `ImportError` and `pytest` could not
   even collect. Bumping pandas to 3.x will silently break MLflow again.
 - **MLflow uses a SQLite backend, not the `mlruns/` file store.** MLflow 3 deprecated the filesystem
-  tracking backend and refuses it outright, so the plan's original `mlruns/` layout is obsolete. The
-  DB and the artifacts both live under `mlruns/` (`mlruns/mlflow.db` + `mlruns/artifacts/`), gitignored.
+  tracking backend and refuses it outright, so the plan's original `mlruns/` layout is obsolete.
+- **MLflow has two modes, both handled by `src.tracking`.** With a `.env` present
+  (`MLFLOW_TRACKING_URI`), runs go to the team's **shared MLflow server on the VPS**
+  (`deploy/docker-compose.yml`). Without it, they fall back to a local SQLite at `mlruns/mlflow.db`.
+  Both are gitignored.
+- **Never commit `mlflow.db`.** SQLite is binary and git cannot merge it — two teammates running
+  experiments the same day would produce a merge that silently overwrites one of them. Sharing is
+  done via the server, never via the repo. Same reason `.env` (which holds the password) is ignored;
+  `.env.example` is the versioned template.
 - **Always configure MLflow through `src.tracking.setup_mlflow(experiment)`.** MLflow's default store
   is relative to the *cwd*, so a script run from the repo root and a notebook run from `notebooks/`
-  would log to two different databases. `setup_mlflow` anchors the store at the repo root.
+  would log to two different databases. `setup_mlflow` anchors the local store at the repo root and
+  transparently switches to the remote server when `.env` exists.
+- The MLflow version in `deploy/Dockerfile` (**3.14.0**) must match `pyproject.toml`. Client/server
+  schema drift produces obscure errors.
 - **`[project.scripts]` needs the `[build-system]` block.** Without it uv treats the project as
   "virtual" and installs nothing — the `mlflow-ui` command would not exist.
 - Notebook code must work on **pandas 2**: `select_dtypes(include=["str"])` is pandas-3-only, use

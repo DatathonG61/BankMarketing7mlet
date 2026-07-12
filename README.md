@@ -141,6 +141,27 @@ Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
 
 <!-- responsável: Bertelli -->
 
+### Tracking compartilhado
+
+Os runs do grupo vão para um **servidor MLflow no VPS** — os quatro enxergam os mesmos
+experimentos. Para conectar:
+
+```bash
+cp .env.example .env     # preencher com a URL e a senha (peça ao Gabriel)
+```
+
+Feito isso, nada mais muda: `uv run python -m src.data_prep` já loga no servidor e
+`uv run mlflow-ui` abre a UI compartilhada. **Sem `.env`, tudo funciona offline** em
+`mlruns/mlflow.db` (fallback local, só na sua máquina).
+
+Como subir o servidor: [`deploy/README.md`](deploy/README.md).
+
+> **O `mlflow.db` nunca é commitado.** SQLite é binário e o git não sabe mesclar — dois colegas
+> rodando experimentos no mesmo dia gerariam um merge que sobrescreve os runs de um deles.
+> Compartilhamento se faz com servidor, não com repositório.
+
+### Detalhes de configuração
+
 O MLflow é configurado **sempre** via `src.tracking.setup_mlflow(experimento)`. Duas armadilhas que
 isso resolve:
 
