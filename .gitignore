@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# MLflow tracking store (local, cresce rapido)
+mlruns/
+mlartifacts/
+
+# Kaggle credentials
+kaggle.json
+mlflow.db
