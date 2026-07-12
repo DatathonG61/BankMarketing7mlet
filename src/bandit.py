@@ -25,39 +25,3 @@ Instrumentar com MLflow via `src.tracking.setup_mlflow("datathon-bandit")`, loga
 epsilon, seed e as métricas (conversão no replay, regret, n_matched). Reportar **média ± desvio
 sobre múltiplas seeds** — bandits são estocásticos, uma rodada única não é resultado.
 """
-
-
-class EpsilonGreedy:
-    """Explora ao acaso com prob. `epsilon`; usa o melhor braço conhecido com prob. 1-epsilon."""
-
-    def __init__(self, n_arms: int, epsilon: float = 0.1, seed: int | None = None) -> None:
-        raise NotImplementedError
-
-    def select_arm(self) -> int:
-        raise NotImplementedError
-
-    def update(self, arm: int, reward: int) -> None:
-        raise NotImplementedError
-
-
-class ThompsonSampling:
-    """Beta-Bernoulli: cada braço tem uma Beta(alpha, beta); amostra de cada e pega o argmax.
-
-    Prior padrão Beta(1, 1) = uniforme (não-informativo). `update` faz alpha += 1 quando
-    reward == 1 e beta += 1 quando reward == 0.
-    """
-
-    def __init__(
-        self,
-        n_arms: int,
-        alpha_prior: float = 1.0,
-        beta_prior: float = 1.0,
-        seed: int | None = None,
-    ) -> None:
-        raise NotImplementedError
-
-    def select_arm(self) -> int:
-        raise NotImplementedError
-
-    def update(self, arm: int, reward: int) -> None:
-        raise NotImplementedError

@@ -11,6 +11,20 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 | Bertelli | Validação e MLOps | 4 e 7 |
 | Matheus | Serviço e Infra | 5 e 6 |
 
+### Progresso
+
+| Etapa | Entregável | Status |
+|---|---|---|
+| 0 — Organização | estrutura, `uv`, README | ✅ concluída |
+| 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
+| 2 — Preparação da base | `src/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
+| 3 — Baseline e bandit | `src/bandit.py` | ⬜ esqueleto |
+| 4 — Avaliação e golden set | `tests/` | ⬜ não iniciada |
+| 5 — API | `src/api.py` | ⬜ esqueleto |
+| 6 — Arquitetura em nuvem | seção 7 deste README | ⬜ não iniciada |
+| 7 — MLOps / MLflow | instrumentação da Etapa 3 | ⬜ parcial (Etapa 2 já loga) |
+| 8 — Apresentação | vídeo | ⬜ não iniciada |
+
 ---
 
 ## 1. O problema
@@ -41,6 +55,9 @@ o braço que parece melhor), realocando tráfego para o braço vencedor *enquant
 [Bank Marketing (henriqueyamahata)](https://www.kaggle.com/datasets/henriqueyamahata/bank-marketing)
 — `bank-additional-full.csv`, **41.188 linhas × 21 colunas** (20 features + target `y`), separador `;`.
 Campanhas reais de um banco português entre **maio/2008 e novembro/2010**.
+
+> 📖 **Dicionário completo (raw + processed): [`docs/data-dictionary.md`](docs/data-dictionary.md).**
+> Leia antes de mexer nos dados — é onde estão os domínios de cada coluna e as armadilhas.
 
 Achados da EDA (`notebooks/01-eda.ipynb`) que **governam todo o pipeline**:
 
@@ -123,32 +140,72 @@ Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
 ## 8. MLOps (ciclo de vida)
 
 <!-- responsável: Bertelli -->
-<!-- TODO: MLflow — priors, epsilon, seed e métricas logados; ciclo dados → experimento →
-     estado do bandit → serving → feedback → monitoramento → reset em drift -->
+
+O MLflow é configurado **sempre** via `src.tracking.setup_mlflow(experimento)`. Duas armadilhas que
+isso resolve:
+
+- O store padrão do MLflow é **relativo ao diretório de execução** — um script rodado da raiz e um
+  notebook rodado de `notebooks/` gravariam em bancos diferentes. `setup_mlflow` ancora o store na
+  raiz do repositório.
+- O **MLflow 3 descontinuou o file store `mlruns/`** (que o plano original previa) e recusa o
+  backend de filesystem. Usamos SQLite (`mlflow.db`); `mlruns/` guarda só os artefatos.
+
+A Etapa 2 já loga (parâmetros da limpeza, taxa-base, conversão por braço, `preprocessor.joblib` e
+`bandit_frame.parquet` como artefatos). Ver a UI com:
+
+```bash
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+
+<!-- TODO Bertelli: instrumentar a Etapa 3 (priors, epsilon, seed, regret, n_matched) e escrever o
+     parágrafo do ciclo: dados → experimento → estado do bandit → serving → feedback →
+     monitoramento → reset em drift -->
 
 ## 9. Limitações
 
 <!-- responsável: todos -->
-<!-- TODO: avaliação offline por replay ≠ produção; dados de 2008–2010 -->
+
+**O golden set não é uma amostra representativa da base.** O split é temporal, e treino e golden set
+caem em regimes econômicos diferentes:
+
+| | Treino (80% inicial) | Golden set (20% final) |
+|---|---|---|
+| `euribor3m` | 4,27 | **1,03** |
+| `emp.var.rate` | 0,65 | **−2,19** |
+| **conversão** | **6,38%** | **30,83%** |
+
+Com o crash de 2008 e o corte de juros que veio depois, o depósito a prazo perdeu concorrência e a
+conversão quase **quintuplicou**. Isso corta dos dois lados. É o **argumento a favor do bandit**: um
+classificador batch treinado nos primeiros 80% aprenderia "conversão ≈ 6%" e chegaria em 2010
+prevendo 6% num mundo de 31% — completamente descalibrado, enquanto o bandit se readapta a cada
+feedback. Mas é também um **alerta de leitura**: qualquer métrica medida no golden set vai parecer
+excelente pelo motivo errado — o período é fácil, não o modelo é bom.
+
+<!-- TODO: avaliação offline por replay ≠ produção (só sabemos o desfecho da ação que de fato
+     aconteceu); dados de 2008–2010 não representam o mercado atual -->
 
 ---
 
 ## Estrutura do repositório
 
 ```
-data/raw/            # bank-additional-full.csv (commitado)
-data/processed/      # base tratada + bandit_frame.parquet (saída da Etapa 2)
+data/raw/                       # bank-additional-full.csv (commitado)
+data/processed/
+  bandit_frame.parquet          # saída da Etapa 2: arm + reward + 18 features de contexto
+docs/data-dictionary.md         # dicionário raw + processed
 notebooks/
-  01-eda.ipynb       # EDA + análise de leakage + definição dos braços (Etapa 1)
-  01-baseline.ipynb  # baseline de propensão
+  01-eda.ipynb                  # EDA, leakage e escolha dos braços (Etapa 1)          ✅
 src/
-  data_prep.py       # load_raw() / clean() / build_bandit_frame() — contrato de dados
-  bandit.py          # EpsilonGreedy / ThompsonSampling — select_arm() / update()
-  api.py             # FastAPI: /recommend, /feedback, /health
-models/              # preprocessor.joblib, bandit_state.json
-reports/figures/     # gráficos usados no README e no vídeo
-tests/               # pytest
-mlruns/              # MLflow (não versionado)
+  data_prep.py                  # contrato de dados: load_raw/clean/build_bandit_frame  ✅
+  tracking.py                   # configuração única do MLflow                          ✅
+  bandit.py                     # EpsilonGreedy / ThompsonSampling (Etapa 3)     ⬜ esqueleto
+  api.py                        # FastAPI: /recommend, /feedback, /health (Etapa 5) ⬜ esqueleto
+models/
+  preprocessor.joblib           # encoder ajustado no treino (Etapa 2)
+  bandit_state.json             # estado do bandit (Etapa 5) — ainda não existe
+reports/figures/                # gráficos usados no README e no vídeo
+tests/                          # pytest (Etapa 4) — ainda vazio
+mlflow.db / mlruns/             # MLflow: banco + artefatos (não versionados)
 ```
 
 `src/` existe justamente para que a API, a simulação do bandit e a avaliação chamem **as mesmas**
