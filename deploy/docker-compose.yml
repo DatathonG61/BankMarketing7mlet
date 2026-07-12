@@ -12,19 +12,24 @@ services:
     build: .
     restart: unless-stopped
 
+    # Nomes "pelados" de proposito (sem =valor). Se o valor vier fixado aqui, o Coolify marca a
+    # variavel como somente-leitura no painel e voce nao consegue mais edita-la. Assim, todas
+    # aparecem editaveis em Environment Variables. O entrypoint.sh valida se faltou alguma.
     environment:
-      # Magic do Coolify: gera o dominio e aponta o proxy para a porta 5000 deste servico.
+      # Dominio: definir como SERVICE_FQDN_MLFLOW_5000=https://... no painel.
+      # (Nao use o campo "Domains" -- para compose o Coolify o regenera a partir desta variavel.)
       - SERVICE_FQDN_MLFLOW_5000
 
-      # Usuario admin inicial do basic-auth. Definir no painel do Coolify (Environment Variables).
-      - MLFLOW_AUTH_CONFIG_PATH=/mlflow/auth.ini
-      - MLFLOW_ADMIN_USERNAME=${MLFLOW_ADMIN_USERNAME:?defina no Coolify}
-      - MLFLOW_ADMIN_PASSWORD=${MLFLOW_ADMIN_PASSWORD:?defina no Coolify}
+      # Credenciais do basic-auth. Definir no painel do Coolify.
+      - MLFLOW_ADMIN_USERNAME
+      - MLFLOW_ADMIN_PASSWORD
 
-      # Exigida pelo basic-auth (protecao CSRF). Qualquer string longa e aleatoria serve, mas ela
-      # precisa ser FIXA: se mudar a cada deploy, as sessoes abertas do time sao invalidadas.
-      # Gerar com: openssl rand -hex 32
-      - MLFLOW_FLASK_SERVER_SECRET_KEY=${MLFLOW_FLASK_SERVER_SECRET_KEY:?defina no Coolify}
+      # Exigida pelo basic-auth (protecao CSRF). Precisa ser FIXA: se mudar a cada deploy, as
+      # sessoes abertas do time sao invalidadas. Gerar UMA VEZ com: openssl rand -hex 32
+      - MLFLOW_FLASK_SERVER_SECRET_KEY
+
+      # Interno, nao precisa mexer.
+      - MLFLOW_AUTH_CONFIG_PATH=/mlflow/auth.ini
 
     expose:
       - "5000"
