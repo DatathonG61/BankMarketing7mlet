@@ -37,7 +37,7 @@ class BaselineBasic:
         return
     
     def select_arm(self, customer):
-        return "cellphone"
+        return "cellular"
     
     def update(self, arm, customer, reward):
         return
@@ -64,7 +64,7 @@ class ThompsonSampling:
         self.n_features = n_features
         self.rng = np.random.default_rng(seed)
 
-        arms = {"cellphone", "telephone"}
+        arms = {"cellular", "telephone"}
         self.arms = {}
         for arm in arms:
             self.arms[arm] = ArmState(
