@@ -19,10 +19,10 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 | 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
 | 2 — Preparação da base | `src/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
 | 3 — Baseline e bandit | `src/bandit.py` | ⬜ esqueleto |
-| 4 — Avaliação e golden set | `tests/` | ⬜ não iniciada |
+| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | 🔶 parcial (testes e baselines prontos; falta Etapa 3) |
 | 5 — API | `src/api.py` | ⬜ esqueleto |
 | 6 — Arquitetura em nuvem | seção 7 deste README | ⬜ não iniciada |
-| 7 — MLOps / MLflow | instrumentação da Etapa 3 | ⬜ parcial (Etapa 2 já loga) |
+| 7 — MLOps / MLflow | `src/bm/mlflow_logging.py` | 🔶 parcial (wrapper pronto; falta rodar a Etapa 3 de verdade) |
 | 8 — Apresentação | vídeo | ⬜ não iniciada |
 
 ---
@@ -124,8 +124,24 @@ Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
 ## 5. Resultados
 
 <!-- responsável: Adryen -->
-<!-- TODO: tabela conversão/regret por política, gráfico de conversão acumulada,
-     análise exploração × explotação, média ± desvio sobre múltiplas seeds -->
+
+### Tabela comparativa (Etapa 4.1 — Bertelli)
+
+As duas primeiras linhas vêm direto do histórico (`arm_stats`, sem simular nada — é a taxa de
+conversão real de quem sempre usou aquele canal). As duas últimas dependem do bandit treinado
+(Etapa 3) e ficam pendentes até lá.
+
+| Política | Conversão (replay) | Regret acumulado | N amostras usadas |
+|---|---|---|---|
+| Regra fixa (telephone) | 5,23% | alto | 15.041 |
+| Melhor braço histórico (cellular) | 14,74% | 0 (oráculo) | 26.135 |
+| Epsilon-Greedy (epsilon=0.1) | pendente | pendente | pendente |
+| Thompson Sampling | pendente | pendente | pendente |
+
+Gerar/atualizar esta tabela: `uv run python -m src.bm.evaluation`.
+
+<!-- TODO Adryen: gráfico de conversão acumulada, análise exploração × explotação,
+     média ± desvio sobre múltiplas seeds — e completar as 2 últimas linhas da tabela acima -->
 
 ## 6. Golden Set
 
@@ -179,9 +195,23 @@ A Etapa 2 já loga (parâmetros da limpeza, taxa-base, conversão por braço, `p
 uv run mlflow-ui        # localhost:5000 — ou `uv run mlflow-ui 5001` para outra porta
 ```
 
-<!-- TODO Bertelli: instrumentar a Etapa 3 (priors, epsilon, seed, regret, n_matched) e escrever o
-     parágrafo do ciclo: dados → experimento → estado do bandit → serving → feedback →
-     monitoramento → reset em drift -->
+### Ciclo de vida (dados → experimento → produção → feedback)
+
+O ciclo completo deste projeto: os **dados** ficam versionados em `data/` (raw e processado,
+com o contrato de `data_prep.py` garantindo que todo mundo aplica a mesma transformação); cada
+rodada de simulação do bandit vira um **experimento rastreado** no MLflow
+(`src/bm/mlflow_logging.py`), com os parâmetros (política, priors, epsilon, seed) e as métricas
+(conversão, regret, N) registrados via `log_bandit_run`; o **estado do bandit** (a crença sobre
+cada braço) é salvo como **artefato versionado** desse run; esse artefato é o que a **API
+(Etapa 5)** carrega pra servir recomendações; cada resposta real de cliente (`POST /feedback`)
+**realimenta o modelo**, fechando o loop online; e a **conversão por braço observada em
+produção** é o sinal de **monitoramento** que indicaria a necessidade de um retreino ou reset —
+se a conversão de um braço cair de forma sustentada, é sinal de que o comportamento do cliente
+mudou (*drift*) e o bandit precisa reaprender, não só seguir ajustando incrementalmente.
+
+**Ainda pendente:** instrumentar os runs reais da Etapa 3 com `log_bandit_run` assim que o
+`train_bandit` do Adryen estiver pronto (logar `n_arms`, priors/epsilon, seed, conversão, regret
+e `n_matched` de cada rodada).
 
 ## 9. Limitações
 

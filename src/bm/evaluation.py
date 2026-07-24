@@ -10,6 +10,9 @@ de 0/1 e da taxa de conversão do braço oráculo (melhor braço histórico, ~14
 from collections.abc import Sequence
 
 import numpy as np
+import pandas as pd
+
+from bm.data_prep import arm_stats
 
 
 def compute_regret(rewards: Sequence[int], p_oracle: float) -> list[float]:
@@ -36,3 +39,51 @@ def summarize_policy(rewards: Sequence[int], p_oracle: float) -> dict[str, float
         "regret_final": float(regret[-1]),
         "n_amostras": n,
     }
+
+
+def build_metrics_table(frame: pd.DataFrame) -> pd.DataFrame:
+    """Monta a tabela da Etapa 4.1 (Política | Conversão | Regret acumulado | N amostras usadas).
+
+    As duas primeiras linhas (baselines) vêm direto do histórico via `arm_stats` — não
+    dependem de simulação nenhuma. As duas últimas dependem do bandit treinado (Etapa 3,
+    Adryen) e ficam "pendente" até lá.
+    """
+    stats = arm_stats(frame).to_dict("index")
+
+    linhas = [
+        {
+            "Política": "Regra fixa (telephone)",
+            "Conversão (replay)": f"{stats['telephone']['conversao_pct']}%",
+            "Regret acumulado": "alto",
+            "N amostras usadas": stats["telephone"]["n"],
+        },
+        {
+            "Política": "Melhor braço histórico (cellular)",
+            "Conversão (replay)": f"{stats['cellular']['conversao_pct']}%",
+            "Regret acumulado": "0 (oráculo)",
+            "N amostras usadas": stats["cellular"]["n"],
+        },
+        {
+            "Política": "Epsilon-Greedy (epsilon=0.1)",
+            "Conversão (replay)": "pendente",
+            "Regret acumulado": "pendente",
+            "N amostras usadas": "pendente",
+        },
+        {
+            "Política": "Thompson Sampling",
+            "Conversão (replay)": "pendente",
+            "Regret acumulado": "pendente",
+            "N amostras usadas": "pendente",
+        },
+    ]
+    return pd.DataFrame(linhas)
+
+
+if __name__ == "__main__":
+    import sys
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    frame_real = pd.read_parquet("data/processed/bandit_frame.parquet")
+    print(build_metrics_table(frame_real).to_string(index=False))
