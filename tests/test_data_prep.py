@@ -41,33 +41,39 @@ def _raw_rows() -> pd.DataFrame:
 
 
 def test_clean_removes_duration():
+    """Confere que `duration` (vazamento — só existe depois da ligação) some na limpeza."""
     out = clean(_raw_rows())
     assert "duration" not in out.columns
 
 
 def test_clean_removes_duplicates():
+    """Confere que linhas duplicadas exatas são removidas pela limpeza."""
     raw_com_duplicata = pd.concat([_raw_rows(), _raw_rows().iloc[[0]]], ignore_index=True)
     out = clean(raw_com_duplicata)
     assert len(out) == len(_raw_rows())
 
 
 def test_clean_creates_was_contacted_before():
+    """Confere que o código sentinela `pdays == 999` vira a flag booleana correta."""
     out = clean(_raw_rows())
     assert "pdays" not in out.columns
     assert out["was_contacted_before"].tolist() == [False, True, False]
 
 
 def test_build_bandit_frame_has_expected_columns():
+    """Confere que a tabela final tem todas as colunas que o bandit e a API vão consumir."""
     frame = build_bandit_frame(clean(_raw_rows()))
     expected = {"arm", "reward", *CONTEXT_FEATURES}
     assert expected.issubset(frame.columns)
 
 
 def test_build_bandit_frame_reward_is_binary():
+    """Confere que `reward` é sempre 0 ou 1 — nunca outro valor estranho."""
     frame = build_bandit_frame(clean(_raw_rows()))
     assert set(frame["reward"].unique()) <= {0, 1}
 
 
 def test_arm_values_are_valid():
+    """Confere que `arm` é sempre 'cellular' ou 'telephone' — pegaria o bug do nome errado."""
     frame = build_bandit_frame(clean(_raw_rows()))
     assert frame["arm"].isin(ARMS).all()

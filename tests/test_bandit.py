@@ -17,18 +17,21 @@ VALID_ARMS = {"cellular", "telephone"}
 
 
 def test_select_arm_returns_valid_arm():
+    """Confere que `select_arm` sempre devolve um braço válido, nunca outro valor."""
     bandit = ThompsonSampling(n_features=3, seed=0)
     customer = np.array([1.0, 0.0, 1.0])
     assert bandit.select_arm(customer) in VALID_ARMS
 
 
 def test_update_changes_state():
+    """Usa 'cellular' direto (não o que `select_arm` devolveu) — assim, se o dicionário
+    interno de braços for criado com o nome errado, este teste falha com KeyError em vez
+    de silenciosamente aceitar qualquer nome que o bandit escolher."""
     bandit = ThompsonSampling(n_features=3, seed=0)
     customer = np.array([1.0, 0.0, 1.0])
-    arm = bandit.select_arm(customer)
-    b_antes = bandit.arms[arm].b.copy()
-    bandit.update(arm, customer, reward=1)
-    assert not np.array_equal(bandit.arms[arm].b, b_antes)
+    b_antes = bandit.arms["cellular"].b.copy()
+    bandit.update("cellular", customer, reward=1)
+    assert not np.array_equal(bandit.arms["cellular"].b, b_antes)
 
 
 def test_converges_on_synthetic_arms():
