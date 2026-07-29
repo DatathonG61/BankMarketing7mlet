@@ -33,13 +33,19 @@ ninguém perceber. Aqui o caminho local é sempre absoluto, a partir da raiz do 
     uv run mlflow-ui        # abre a UI (local ou remota, conforme o .env)
 """
 
+import logging
 import os
 import subprocess
 import sys
 import webbrowser
 from pathlib import Path
 
-REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+_logger = logging.getLogger(__name__)
+
+# src/bm/tracking.py -> repo root precisa subir 3 niveis (bm -> src -> raiz). Errar essa conta
+# faz o .env da raiz nunca ser encontrado (procura em src/.env) e o projeto cai pro SQLite local
+# sem ninguem perceber -- ja aconteceu quando o modulo foi movido para src/bm/.
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 
 MLRUNS_DIR: Path = REPO_ROOT / "mlruns"
 DB_PATH: Path = MLRUNS_DIR / "mlflow.db"
@@ -64,7 +70,16 @@ def _load_dotenv() -> None:
 def tracking_uri() -> str:
     """URI do servidor compartilhado (se houver `.env`), senão o SQLite local."""
     _load_dotenv()
-    return os.environ.get("MLFLOW_TRACKING_URI") or LOCAL_TRACKING_URI
+    uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if not uri:
+        _logger.warning(
+            "MLFLOW_TRACKING_URI nao definida (.env ausente ou incompleto em %s) -- "
+            "gravando runs SOMENTE LOCAL em %s. O time nao vai ver esses runs.",
+            REPO_ROOT / ".env",
+            LOCAL_TRACKING_URI,
+        )
+        return LOCAL_TRACKING_URI
+    return uri
 
 
 def is_remote() -> bool:
