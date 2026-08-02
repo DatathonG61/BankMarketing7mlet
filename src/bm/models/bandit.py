@@ -59,8 +59,8 @@ class ArmState:
     a_inv: np.ndarray
     
 class ThompsonSampling:
-    def __init__(self, n_features: int, seed: int | None = None):
-        self.alpha = 1.0
+    def __init__(self, alpha: int, n_features: int, seed: int | None = None):
+        self.alpha = alpha
         self.n_features = n_features
         self.rng = np.random.default_rng(seed)
 
@@ -83,7 +83,25 @@ class ThompsonSampling:
             a_inv = state.a_inv
             mu = a_inv @ state.b
             cov = (self.alpha ** 2) * a_inv
-            theta = self.rng.multivariate_normal(mu, cov)
+
+            #try:
+            #    theta = self.rng.multivariate_normal(mu, cov)
+            #except np.linalg.LinAlgError:
+                #print("Erro ao gerar theta")
+                #print("np.linalg.cond(cov) = ", np.linalg.cond(cov))
+                #print("Menor autovalor:", np.linalg.eigvalsh(cov).min())
+                #print("Maior autovalor:", np.linalg.eigvalsh(cov).max())
+                #print("Tem NaN:", np.isnan(cov).any())
+                #print("Tem Inf:", np.isinf(cov).any())
+                #print("Shape:", cov.shape)
+                #print("All close = " ,np.allclose(cov, cov.T))
+                #print("np.max(np.abs(cov - cov.T)) = ", np.max(np.abs(cov - cov.T)))
+                #raise
+
+            L = np.linalg.cholesky(cov)
+            z = self.rng.standard_normal(len(mu))
+            theta = mu + L @ z
+
             score = theta @ x
 
             if score > best_score:
@@ -103,6 +121,3 @@ class ThompsonSampling:
         state.a_inv = a_inv - np.outer(aX, aX) / denominator
 
         state.b += reward * x
-
-def train_bandit(bandit, train_data):
-    return
