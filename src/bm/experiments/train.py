@@ -15,16 +15,21 @@ def train_bandit(bandit, train_data, preprocessor):
 
     size = len(train_data)
     for step in range(size):
-        print("Rodando step %d de %d", step, size)
+        if step % 5000 == 0:
+            print(f"Rodando step {step} de {size}")
 
         customer = X[step]
 
         predicted_arm = bandit.select_arm(customer)
-
         historical_arm = arms[step]
 
-        reward = rewards[step] if predicted_arm == historical_arm else 0
+        if predicted_arm != historical_arm:
+            # Replay / rejection sampling (Li et al., 2011): só sabemos o resultado do
+            # braço que de fato foi usado no histórico. Se o bandit escolheu outro
+            # braço, a linha é descartada -- não conta e não atualiza o bandit.
+            continue
 
+        reward = rewards[step]
         bandit.update(
             predicted_arm,
             customer,
@@ -32,9 +37,7 @@ def train_bandit(bandit, train_data, preprocessor):
         )
 
         cumulative_reward += reward
-
-        if predicted_arm == historical_arm:
-            correct_actions += 1
+        correct_actions += 1
 
         mlflow.log_metric(
             "reward",
