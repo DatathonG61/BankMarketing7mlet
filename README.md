@@ -18,11 +18,11 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 | 0 — Organização | estrutura, `uv`, README | ✅ concluída |
 | 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
 | 2 — Preparação da base | `src/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
-| 3 — Baseline e bandit | `src/bandit.py` | ⬜ esqueleto |
-| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | 🔶 parcial (testes e baselines prontos; falta Etapa 3) |
+| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/` | 🔶 parcial (Thompson pronto e treinado; Epsilon-Greedy ainda esqueleto) |
+| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | 🔶 parcial (tabela e golden set com Thompson; falta a linha de Epsilon-Greedy) |
 | 5 — API | `src/api.py` | ⬜ esqueleto |
 | 6 — Arquitetura em nuvem | seção 7 deste README | ⬜ não iniciada |
-| 7 — MLOps / MLflow | `src/bm/mlflow_logging.py` | 🔶 parcial (wrapper pronto; falta rodar a Etapa 3 de verdade) |
+| 7 — MLOps / MLflow | `src/bm/mlflow_logging.py`, `src/bm/experiments/run_thompson_replay.py` | ✅ Thompson instrumentado (10 seeds, média ± desvio) |
 | 8 — Apresentação | vídeo | ⬜ não iniciada |
 
 ---
@@ -128,25 +128,59 @@ Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
 ### Tabela comparativa (Etapa 4.1 — Bertelli)
 
 As duas primeiras linhas vêm direto do histórico (`arm_stats`, sem simular nada — é a taxa de
-conversão real de quem sempre usou aquele canal). As duas últimas dependem do bandit treinado
-(Etapa 3) e ficam pendentes até lá.
+conversão real de quem sempre usou aquele canal). A linha do Thompson Sampling é a média ± desvio
+de 10 seeds, via replay/rejection sampling sobre o `bandit_frame` completo (`run_thompson_replay`).
+Epsilon-Greedy fica pendente até o Adryen implementar a classe (Etapa 3).
 
 | Política | Conversão (replay) | Regret acumulado | N amostras usadas |
 |---|---|---|---|
 | Regra fixa (telephone) | 5,23% | alto | 15.041 |
 | Melhor braço histórico (cellular) | 14,74% | 0 (oráculo) | 26.135 |
 | Epsilon-Greedy (epsilon=0.1) | pendente | pendente | pendente |
-| Thompson Sampling | pendente | pendente | pendente |
+| Thompson Sampling (média de 10 seeds) | 12,68% ± 0,23pp | 446,9 ± 46,3 | 21.714 |
 
-Gerar/atualizar esta tabela: `uv run python -m src.bm.evaluation`.
+O Thompson esmaga a regra fixa (5,23% → ~12,7%) e chega perto do oráculo (14,74%) sem nunca ter
+recebido a informação de qual braço é o melhor — descobre sozinho, pagando o preço da exploração
+(por isso não chega nos 14,74%: parte das rodadas ele ainda testa `telephone`). `N amostras usadas`
+é menor que os baselines porque o replay descarta toda linha em que o braço escolhido pelo bandit
+não bate com o braço real do histórico (rejection sampling — não dá pra saber o resultado de uma
+ação que não foi de fato tomada).
 
-<!-- TODO Adryen: gráfico de conversão acumulada, análise exploração × explotação,
-     média ± desvio sobre múltiplas seeds — e completar as 2 últimas linhas da tabela acima -->
+Gerar/atualizar esta tabela: `uv run python -m bm.evaluation`.
+
+**Nota sobre o algoritmo:** este Thompson Sampling é **contextual** (regressão linear Bayesiana
+por braço, usa as features do cliente), não o Beta-Bernoulli de 2 braços sem contexto que o plano
+sugere como opção mais simples. O prior é `Normal(0, alpha² · I)` sobre os coeficientes de cada
+braço, com `alpha=1.0` — o equivalente não-informativo ao `Beta(1,1)`: antes de ver dados, nenhum
+braço é favorecido.
+
+<!-- TODO Adryen: gráfico de conversão acumulada, análise exploração × explotação -->
 
 ## 6. Golden Set
 
 <!-- responsável: Bertelli -->
-<!-- TODO: 5 clientes de teste, recomendação do sistema e justificativa de cada um -->
+
+5 clientes do split de teste (últimos 20%, fora do que o bandit usou pra treinar), um por perfil
+sugerido no plano. `arm` é o canal que o banco realmente usou historicamente; `arm_recomendado` é
+o que o Thompson treinado escolheria hoje (pela média da posterior de cada braço, sem sortear —
+resultado reprodutível).
+
+| Perfil | Canal real (histórico) | Canal recomendado | Justificativa |
+|---|---|---|---|
+| Jovem, sucesso em contato anterior | cellular | **telephone** | Alta propensão esperada (`poutcome=success`), mas o bandit não priorizou `cellular` para este cliente — contraintuitivo, ver "Limitações" abaixo. |
+| Aposentado, nunca contatado | cellular | cellular | Aposentados convertem acima da média mesmo sem contato prévio; recomendação bate com a expectativa. |
+| Blue-collar, casado, com empréstimo | cellular | cellular | Perfil historicamente menos propenso; o bandit ainda assim pende para `cellular` (taxa geral do canal é maior). |
+| Saturado de contatos (campaign ≥ 6) | cellular | cellular | Muitos contatos sem sinal de conversão; recomendação segue o canal de maior taxa histórica. |
+| Muitos campos "unknown" | cellular | cellular | Testa robustez do pipeline com dado incompleto — o preprocessor (`handle_unknown="ignore"`) não quebra. |
+
+Gerar/atualizar esta tabela: `uv run python -m bm.golden_set`.
+
+**Atenção — vale revisar antes da apresentação:** no primeiro caso ("alta propensão"), o bandit
+recomendou o canal *oposto* ao que a intuição sugeria. Isso pode ser (a) ruído de uma seed
+específica, (b) o bandit contextual captando um sinal real que a EDA não separou, ou (c) sintoma do
+bug do replay já corrigido em `train.py` ainda deixar a política pouco decidida para casos fora do
+padrão. Vale rodar `run_thompson_replay` de novo com outras seeds e comparar antes de afirmar
+qualquer coisa sobre esse cliente no vídeo.
 
 ## 7. Arquitetura em nuvem
 

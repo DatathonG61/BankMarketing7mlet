@@ -41,14 +41,37 @@ def summarize_policy(rewards: Sequence[int], p_oracle: float) -> dict[str, float
     }
 
 
-def build_metrics_table(frame: pd.DataFrame) -> pd.DataFrame:
+def build_metrics_table(
+    frame: pd.DataFrame, thompson_seeds_summary: dict[str, float] | None = None
+) -> pd.DataFrame:
     """Monta a tabela da Etapa 4.1 (Política | Conversão | Regret acumulado | N amostras usadas).
 
     As duas primeiras linhas (baselines) vêm direto do histórico via `arm_stats` — não
-    dependem de simulação nenhuma. As duas últimas dependem do bandit treinado (Etapa 3,
-    Adryen) e ficam "pendente" até lá.
+    dependem de simulação nenhuma. Epsilon-Greedy fica "pendente" até o Adryen
+    implementar a classe (Etapa 3). Thompson Sampling fica "pendente" até alguém passar
+    `thompson_seeds_summary` (saída de
+    `bm.experiments.run_thompson_replay.summarize_across_seeds`, média ± desvio sobre
+    múltiplas seeds).
     """
     stats = arm_stats(frame).to_dict("index")
+
+    if thompson_seeds_summary is None:
+        thompson_row = {
+            "Política": "Thompson Sampling",
+            "Conversão (replay)": "pendente",
+            "Regret acumulado": "pendente",
+            "N amostras usadas": "pendente",
+        }
+    else:
+        s = thompson_seeds_summary
+        thompson_row = {
+            "Política": "Thompson Sampling (média de 10 seeds)",
+            "Conversão (replay)": (
+                f"{s['conversao_media'] * 100:.2f}% +/- {s['conversao_desvio'] * 100:.2f}pp"
+            ),
+            "Regret acumulado": f"{s['regret_media']:.1f} +/- {s['regret_desvio']:.1f}",
+            "N amostras usadas": f"{s['n_amostras_media']:.0f}",
+        }
 
     linhas = [
         {
@@ -69,12 +92,7 @@ def build_metrics_table(frame: pd.DataFrame) -> pd.DataFrame:
             "Regret acumulado": "pendente",
             "N amostras usadas": "pendente",
         },
-        {
-            "Política": "Thompson Sampling",
-            "Conversão (replay)": "pendente",
-            "Regret acumulado": "pendente",
-            "N amostras usadas": "pendente",
-        },
+        thompson_row,
     ]
     return pd.DataFrame(linhas)
 
@@ -82,8 +100,17 @@ def build_metrics_table(frame: pd.DataFrame) -> pd.DataFrame:
 if __name__ == "__main__":
     import sys
 
+    import joblib
+
+    from bm.experiments.run_thompson_replay import run, summarize_across_seeds
+
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
     frame_real = pd.read_parquet("data/processed/bandit_frame.parquet")
-    print(build_metrics_table(frame_real).to_string(index=False))
+    preprocessor_real = joblib.load("models/preprocessor.joblib")
+
+    resultados_real, _ = run(frame_real, preprocessor_real)
+    agregado_real = summarize_across_seeds(resultados_real)
+
+    print(build_metrics_table(frame_real, agregado_real).to_string(index=False))

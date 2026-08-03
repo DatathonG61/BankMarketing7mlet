@@ -1,9 +1,8 @@
-"""Seleção dos 5 clientes do golden set — Etapa 4.2 (Bertelli).
+"""Seleção e recomendação dos 5 clientes do golden set — Etapa 4.2 (Bertelli).
 
 Escolhe, dentro do `bandit_frame` (saída de `data_prep.build_bandit_frame`), uma linha
-real para cada um dos 5 perfis sugeridos no plano do grupo. Só faz a *seleção* dos
-clientes — a "recomendação" de cada um (o que o bandit escolheria) só existe depois que
-o bandit estiver treinado (Etapa 3, Adryen), então isso fica pra depois, fora daqui.
+real para cada um dos 5 perfis sugeridos no plano do grupo, e -- agora que o bandit da
+Etapa 3 (Adryen) existe -- calcula a recomendação de cada um.
 
 Perfis (ver `Plano 7MLET Refinado.pdf`, seção 4.2):
 1. jovem_sucesso_previo — alta propensão (contato anterior converteu)
@@ -14,6 +13,32 @@ Perfis (ver `Plano 7MLET Refinado.pdf`, seção 4.2):
 """
 
 import pandas as pd
+
+from bm.data_prep import CONTEXT_FEATURES
+
+JUSTIFICATIVAS: dict[str, str] = {
+    "jovem_sucesso_previo": (
+        "já converteu numa campanha anterior (poutcome=success) — perfil de alta "
+        "propensão; comparar com a recomendação real do bandit e discutir se bate "
+        "com a expectativa (ver nota no README)"
+    ),
+    "aposentado_nunca_contatado": (
+        "aposentados convertem acima da média neste dataset mesmo sem contato prévio "
+        "— propensão média-alta"
+    ),
+    "blue_collar_com_emprestimos": (
+        "perfil (profissão + já tem empréstimo) historicamente menos propenso a "
+        "fechar depósito a prazo"
+    ),
+    "saturado_de_contatos": (
+        "6+ contatos nesta campanha sem sinal de conversão — caso de saturação, "
+        "candidato a parar de insistir"
+    ),
+    "muitos_unknown": (
+        "vários campos 'unknown' — testa se o pipeline (one-hot com "
+        "handle_unknown='ignore') segura um cliente com dado incompleto sem quebrar"
+    ),
+}
 
 
 def select_golden_set_clients(frame: pd.DataFrame) -> pd.DataFrame:
@@ -48,3 +73,63 @@ def select_golden_set_clients(frame: pd.DataFrame) -> pd.DataFrame:
     if not linhas:
         return frame.iloc[0:0]
     return pd.concat(linhas, ignore_index=True)
+
+
+def recommend_for_golden_set(
+    golden_frame: pd.DataFrame, bandit, preprocessor
+) -> pd.DataFrame:
+    """Para cada cliente do golden set, calcula o braço recomendado pelo bandit treinado.
+
+    Usa a média da posterior de cada braço (`a_inv @ b`, sem amostrar) em vez de
+    `select_arm` -- é determinístico e reproduzível, o que faz mais sentido pra um
+    relatório do que um sorteio que muda a cada chamada. `score_<braco>` é a
+    pontuação estimada (não é uma probabilidade calibrada; serve pra comparar os
+    braços entre si). Adiciona também a coluna `justificativa` com a explicação de
+    uma frase de cada perfil (ver `JUSTIFICATIVAS`).
+    """
+    X = preprocessor.transform(golden_frame[CONTEXT_FEATURES])
+
+    recomendacoes = []
+    for x in X:
+        scores = {
+            arm: float((state.a_inv @ state.b) @ x) for arm, state in bandit.arms.items()
+        }
+        recomendacoes.append(
+            {"arm_recomendado": max(scores, key=scores.get), **scores}
+        )
+
+    out = golden_frame.reset_index(drop=True).join(pd.DataFrame(recomendacoes))
+    out["justificativa"] = out["perfil_golden_set"].map(JUSTIFICATIVAS)
+    return out
+
+
+if __name__ == "__main__":
+    import sys
+
+    import joblib
+
+    from bm.data_prep import temporal_split
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    frame_real = pd.read_parquet("data/processed/bandit_frame.parquet")
+    # golden set vem do split de teste (últimos 20%, plano seção 2.3/4.2) -- não do
+    # mesmo trecho usado pra treinar o bandit.
+    _, teste = temporal_split(frame_real)
+
+    preprocessor_real = joblib.load("models/preprocessor.joblib")
+    bandit_real = joblib.load("models/thompson.joblib")
+
+    clientes = select_golden_set_clients(teste)
+    resultado = recommend_for_golden_set(clientes, bandit_real, preprocessor_real)
+
+    colunas = [
+        "perfil_golden_set",
+        "arm",
+        "arm_recomendado",
+        "cellular",
+        "telephone",
+        "justificativa",
+    ]
+    print(resultado[colunas].to_string(index=False))
