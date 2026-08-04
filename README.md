@@ -20,8 +20,8 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 | 2 — Preparação da base | `src/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
 | 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/` | 🔶 parcial (Thompson pronto e treinado; Epsilon-Greedy ainda esqueleto) |
 | 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | 🔶 parcial (tabela e golden set com Thompson; falta a linha de Epsilon-Greedy) |
-| 5 — API | `src/api.py` | ⬜ esqueleto |
-| 6 — Arquitetura em nuvem | seção 7 deste README | ⬜ não iniciada |
+| 5 — API | `src/bm/api.py` | ✅ concluída (`/recommend`, `/feedback`, `/health`) |
+| 6 — Arquitetura em nuvem | seção 7 deste README | ✅ concluída |
 | 7 — MLOps / MLflow | `src/bm/mlflow_logging.py`, `src/bm/experiments/run_thompson_replay.py` | ✅ Thompson instrumentado (10 seeds, média ± desvio) |
 | 8 — Apresentação | vídeo | ⬜ não iniciada |
 
