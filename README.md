@@ -102,19 +102,55 @@ Ambiente gerenciado com [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv
 ```bash
 uv sync                                   # cria o .venv a partir do lockfile
 uv run jupyter lab                        # abre os notebooks
-uv run python -m src.data_prep            # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
+uv run python -m bm.data_prep             # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
 uv run pytest -q                          # testes
 uv run mlflow-ui                          # abre a UI do MLflow (localhost:5000)
+uv run uvicorn bm.api:app --reload        # Etapa 5: sobe a API em localhost:8000
 ```
 
 Requer Python >= 3.13. O CSV bruto já está em `data/raw/`; se faltar, o notebook de EDA o baixa do
-Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
+Kaggle automaticamente (requer `~/.kaggle/kaggle.json`). A API exige `models/preprocessor.joblib`
+(Etapa 2) e `models/thompson.joblib` (Etapa 3) presentes — ambos já estão commitados no repo.
 
-> **Estado atual: Etapas 0, 1 e 2 concluídas.** `src/bandit.py` (Etapa 3) e `src/api.py` (Etapa 5)
-> ainda são esqueletos — o comando `uv run uvicorn src.api:app --reload` só funcionará depois da
-> Etapa 5.
+Com a API no ar, a documentação interativa (Swagger) fica em `http://localhost:8000/docs`.
 
-<!-- TODO Matheus: exemplos de curl para /recommend e /feedback + screenshot do Swagger -->
+```bash
+curl http://localhost:8000/health
+
+curl -X POST http://localhost:8000/recommend \
+  -H "Content-Type: application/json" \
+  -d '{
+        "job": "admin.", "marital": "married", "education": "university.degree",
+        "default": "no", "housing": "yes", "loan": "no", "month": "may",
+        "day_of_week": "mon", "poutcome": "nonexistent", "age": 35, "campaign": 1,
+        "previous": 0, "emp.var.rate": 1.1, "cons.price.idx": 93.9,
+        "cons.conf.idx": -36.4, "euribor3m": 4.86, "nr.employed": 5191.0,
+        "was_contacted_before": false
+      }'
+# -> {"arm": "cellular", "arm_scores": {"cellular": 0.05, "telephone": -0.01}, "policy": "thompson"}
+
+curl -X POST http://localhost:8000/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+        "customer": {
+          "job": "admin.", "marital": "married", "education": "university.degree",
+          "default": "no", "housing": "yes", "loan": "no", "month": "may",
+          "day_of_week": "mon", "poutcome": "nonexistent", "age": 35, "campaign": 1,
+          "previous": 0, "emp.var.rate": 1.1, "cons.price.idx": 93.9,
+          "cons.conf.idx": -36.4, "euribor3m": 4.86, "nr.employed": 5191.0,
+          "was_contacted_before": false
+        },
+        "arm": "cellular",
+        "reward": 1
+      }'
+# -> {"status": "updated", "arm": "cellular", "reward": 1}
+```
+
+`/feedback` recebe o mesmo contexto do cliente usado em `/recommend` (não só `arm`/`reward`):
+o Thompson Sampling é contextual, então `bandit.update()` precisa do vetor de features do
+cliente para atualizar a crença por braço, não só do resultado. Cada chamada a `/feedback`
+regrava `models/bandit_state.json` — é o que faz o bandit continuar aprendendo entre restarts
+da API (ver seção 8).
 
 ## 4. Formulação do bandit
 
@@ -185,7 +221,27 @@ qualquer coisa sobre esse cliente no vídeo.
 ## 7. Arquitetura em nuvem
 
 <!-- responsável: Matheus -->
-<!-- TODO: mapeamento 1:1 dos artefatos do repo para serviços gerenciados -->
+
+Mapeamento 1:1 do que já existe no repo para serviços gerenciados (AWS como referência; os
+equivalentes em GCP/Azure são diretos):
+
+| Artefato / processo do repo | Serviço gerenciado | Por quê |
+|---|---|---|
+| `bm.api:app` (FastAPI, `POST /recommend`, `POST /feedback`) | Container em **ECS Fargate** (ou App Runner) atrás de um **Application Load Balancer** | Serviço stateless que precisa escalar horizontalmente e expor HTTP — não há servidor pra gerenciar. |
+| `models/preprocessor.joblib`, `models/thompson.joblib` | **S3**, baixados no `lifespan` do container (ou empacotados na imagem) | Artefatos versionados de treino; o container não deve depender de disco local persistente pra eles. |
+| `models/bandit_state.json` | **DynamoDB** (um item com o estado por braço) no lugar do JSON em disco | O JSON local só sobrevive num único container; em produção múltiplas réplicas do serviço precisam ler/escrever a **mesma** crença — precisa de um store compartilhado e consistente entre instâncias. |
+| `data/raw/`, `data/processed/` | **S3** (raw e processed em prefixos separados) | Mesmo motivo do `mlruns/`: binário/grande, não pertence ao git. |
+| Servidor MLflow (`deploy/docker-compose.yml`) | **ECS Fargate** + backend **RDS Postgres** (troca o SQLite) + artefatos em **S3** | SQLite não aguenta múltiplos escritores concorrentes; é o mesmo problema que hoje nos impede de commitar `mlflow.db` no repo. |
+| `uv run python -m bm.data_prep` (Etapa 2) e o retreino periódico do bandit | **Job agendado** (ECS Scheduled Task / Lambda + EventBridge) | Não é um serviço sempre-ligado; roda sob demanda ou em cron. |
+| `POST /feedback` → drift de conversão por braço | **CloudWatch** (métricas custom logadas pela API) + alarme | É o gatilho de retreino/reset citado na seção 8: se a conversão de um braço cair de forma sustentada, o alarme deveria disparar o job de retreino. |
+| Segredos (`.env`, credencial do MLflow) | **Secrets Manager**, injetado como variável de ambiente no container | Mesma razão do `.env` ser gitignored — só que a versão de produção não pode depender de um arquivo copiado manualmente. |
+
+**Ponto que muda de verdade em relação ao que existe hoje:** `models/bandit_state.json` funciona
+para um único processo local, mas não é a arquitetura certa com mais de uma réplica da API atrás
+do load balancer — duas réplicas escrevendo em arquivos JSON separados divergiriam silenciosamente
+(cada uma aprenderia uma crença diferente). Em nuvem, o estado do bandit precisa sair do
+filesystem do container e virar um recurso compartilhado (DynamoDB, ou Postgres/Redis) que todas
+as réplicas leem e atualizam.
 
 ## 8. MLOps (ciclo de vida)
 
