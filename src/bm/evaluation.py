@@ -41,37 +41,44 @@ def summarize_policy(rewards: Sequence[int], p_oracle: float) -> dict[str, float
     }
 
 
-def build_metrics_table(
-    frame: pd.DataFrame, thompson_seeds_summary: dict[str, float] | None = None
-) -> pd.DataFrame:
-    """Monta a tabela da Etapa 4.1 (Política | Conversão | Regret acumulado | N amostras usadas).
+def _seeds_summary_row(politica: str, summary: dict[str, float] | None) -> dict[str, str]:
+    """Formata a linha de uma política simulada em várias seeds (Thompson ou Epsilon-Greedy).
 
-    As duas primeiras linhas (baselines) vêm direto do histórico via `arm_stats` — não
-    dependem de simulação nenhuma. Epsilon-Greedy fica "pendente" até o Adryen
-    implementar a classe (Etapa 3). Thompson Sampling fica "pendente" até alguém passar
-    `thompson_seeds_summary` (saída de
-    `bm.experiments.run_thompson_replay.summarize_across_seeds`, média ± desvio sobre
-    múltiplas seeds).
+    `None` vira "pendente" -- útil quando quem chama `build_metrics_table` ainda não
+    rodou a simulação daquela política.
     """
-    stats = arm_stats(frame).to_dict("index")
-
-    if thompson_seeds_summary is None:
-        thompson_row = {
-            "Política": "Thompson Sampling",
+    if summary is None:
+        return {
+            "Política": politica,
             "Conversão (replay)": "pendente",
             "Regret acumulado": "pendente",
             "N amostras usadas": "pendente",
         }
-    else:
-        s = thompson_seeds_summary
-        thompson_row = {
-            "Política": "Thompson Sampling (média de 10 seeds)",
-            "Conversão (replay)": (
-                f"{s['conversao_media'] * 100:.2f}% +/- {s['conversao_desvio'] * 100:.2f}pp"
-            ),
-            "Regret acumulado": f"{s['regret_media']:.1f} +/- {s['regret_desvio']:.1f}",
-            "N amostras usadas": f"{s['n_amostras_media']:.0f}",
-        }
+    s = summary
+    return {
+        "Política": f"{politica} (média de 10 seeds)",
+        "Conversão (replay)": (
+            f"{s['conversao_media'] * 100:.2f}% +/- {s['conversao_desvio'] * 100:.2f}pp"
+        ),
+        "Regret acumulado": f"{s['regret_media']:.1f} +/- {s['regret_desvio']:.1f}",
+        "N amostras usadas": f"{s['n_amostras_media']:.0f}",
+    }
+
+
+def build_metrics_table(
+    frame: pd.DataFrame,
+    thompson_seeds_summary: dict[str, float] | None = None,
+    epsilon_seeds_summary: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Monta a tabela da Etapa 4.1 (Política | Conversão | Regret acumulado | N amostras usadas).
+
+    As duas primeiras linhas (baselines) vêm direto do histórico via `arm_stats` — não
+    dependem de simulação nenhuma. `thompson_seeds_summary`/`epsilon_seeds_summary` vêm
+    de `bm.experiments.run_thompson_replay.summarize_across_seeds` /
+    `bm.experiments.run_epsilon_replay.summarize_across_seeds` (média ± desvio sobre
+    múltiplas seeds); ficam "pendente" se não forem passados.
+    """
+    stats = arm_stats(frame).to_dict("index")
 
     linhas = [
         {
@@ -86,13 +93,8 @@ def build_metrics_table(
             "Regret acumulado": "0 (oráculo)",
             "N amostras usadas": stats["cellular"]["n"],
         },
-        {
-            "Política": "Epsilon-Greedy (epsilon=0.1)",
-            "Conversão (replay)": "pendente",
-            "Regret acumulado": "pendente",
-            "N amostras usadas": "pendente",
-        },
-        thompson_row,
+        _seeds_summary_row("Epsilon-Greedy (epsilon=0.1)", epsilon_seeds_summary),
+        _seeds_summary_row("Thompson Sampling", thompson_seeds_summary),
     ]
     return pd.DataFrame(linhas)
 
@@ -102,7 +104,10 @@ if __name__ == "__main__":
 
     import joblib
 
-    from bm.experiments.run_thompson_replay import run, summarize_across_seeds
+    from bm.experiments.run_epsilon_replay import run as run_epsilon
+    from bm.experiments.run_epsilon_replay import summarize_across_seeds as summarize_epsilon
+    from bm.experiments.run_thompson_replay import run as run_thompson
+    from bm.experiments.run_thompson_replay import summarize_across_seeds as summarize_thompson
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -110,7 +115,11 @@ if __name__ == "__main__":
     frame_real = pd.read_parquet("data/processed/bandit_frame.parquet")
     preprocessor_real = joblib.load("models/preprocessor.joblib")
 
-    resultados_real, _ = run(frame_real, preprocessor_real)
-    agregado_real = summarize_across_seeds(resultados_real)
+    resultados_thompson, _ = run_thompson(frame_real, preprocessor_real)
+    agregado_thompson = summarize_thompson(resultados_thompson)
 
-    print(build_metrics_table(frame_real, agregado_real).to_string(index=False))
+    resultados_epsilon, _ = run_epsilon(frame_real, preprocessor_real)
+    agregado_epsilon = summarize_epsilon(resultados_epsilon)
+
+    tabela = build_metrics_table(frame_real, agregado_thompson, agregado_epsilon)
+    print(tabela.to_string(index=False))

@@ -17,12 +17,12 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 |---|---|---|
 | 0 — Organização | estrutura, `uv`, README | ✅ concluída |
 | 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
-| 2 — Preparação da base | `src/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
-| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/` | 🔶 parcial (Thompson pronto e treinado; Epsilon-Greedy ainda esqueleto) |
-| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | 🔶 parcial (tabela e golden set com Thompson; falta a linha de Epsilon-Greedy) |
+| 2 — Preparação da base | `src/bm/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
+| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/` | ✅ concluída (Thompson contextual + Epsilon-Greedy, ambos treinados) |
+| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | ✅ concluída (tabela e golden set com as duas políticas) |
 | 5 — API | `src/bm/api.py` | ✅ concluída (`/recommend`, `/feedback`, `/health`) |
 | 6 — Arquitetura em nuvem | seção 7 deste README | ✅ concluída |
-| 7 — MLOps / MLflow | `src/bm/mlflow_logging.py`, `src/bm/experiments/run_thompson_replay.py` | ✅ Thompson instrumentado (10 seeds, média ± desvio) |
+| 7 — MLOps / MLflow | `src/bm/mlflow_logging.py`, `src/bm/experiments/run_thompson_replay.py`, `run_epsilon_replay.py` | ✅ Thompson e Epsilon-Greedy instrumentados (10 seeds cada, média ± desvio) |
 | 8 — Apresentação | vídeo | ⬜ não iniciada |
 
 ---
@@ -155,7 +155,19 @@ da API (ver seção 8).
 ## 4. Formulação do bandit
 
 <!-- responsável: Adryen -->
-<!-- TODO: Epsilon-Greedy vs Thompson Sampling; priors Beta(1,1) = uniforme/não-informativo -->
+
+Duas políticas implementadas em `src/bm/models/bandit.py`, mesma interface `select_arm()`/`update()`:
+
+- **Epsilon-Greedy (`epsilon=0.1`)** — clássica, não-contextual: conta a média de reward observada
+  por braço; com probabilidade `epsilon` explora um braço aleatório, senão explota o de maior média.
+  Ignora as features do cliente de propósito — é o contraponto simples da tabela de comparação.
+- **Thompson Sampling contextual** — regressão linear Bayesiana por braço (não o Beta-Bernoulli de
+  2 braços sem contexto que o plano sugere como opção mais simples). **Prior documentado**: cada
+  braço parte de `Normal(0, alpha² · I)` sobre os coeficientes, com `alpha=1.0` — o equivalente
+  não-informativo ao `Beta(1,1)`, nenhum braço é favorecido antes de ver dados. A cada rodada,
+  amostra `theta ~ N(mu, alpha² · A⁻¹)` de cada braço e escolhe o de maior `theta @ x`; `update`
+  faz o passo fechado de regressão linear bayesiana (`A += x xᵀ`, `b += reward · x`, `A⁻¹` via
+  Sherman-Morrison).
 
 ## 5. Resultados
 
@@ -164,25 +176,34 @@ da API (ver seção 8).
 ### Tabela comparativa (Etapa 4.1 — Bertelli)
 
 As duas primeiras linhas vêm direto do histórico (`arm_stats`, sem simular nada — é a taxa de
-conversão real de quem sempre usou aquele canal). A linha do Thompson Sampling é a média ± desvio
-de 10 seeds, via replay/rejection sampling sobre o `bandit_frame` completo (`run_thompson_replay`).
-Epsilon-Greedy fica pendente até o Adryen implementar a classe (Etapa 3).
+conversão real de quem sempre usou aquele canal). Epsilon-Greedy e Thompson Sampling são a média ±
+desvio de 10 seeds, via replay/rejection sampling sobre o `bandit_frame` completo
+(`run_epsilon_replay` / `run_thompson_replay`).
 
 | Política | Conversão (replay) | Regret acumulado | N amostras usadas |
 |---|---|---|---|
 | Regra fixa (telephone) | 5,23% | alto | 15.041 |
 | Melhor braço histórico (cellular) | 14,74% | 0 (oráculo) | 26.135 |
-| Epsilon-Greedy (epsilon=0.1) | pendente | pendente | pendente |
+| Epsilon-Greedy (epsilon=0.1, média de 10 seeds) | 11,31% ± 0,11pp | 1.221,6 ± 58,0 | 35.647 |
 | Thompson Sampling (média de 10 seeds) | 12,68% ± 0,23pp | 446,9 ± 46,3 | 21.714 |
 
 O Thompson esmaga a regra fixa (5,23% → ~12,7%) e chega perto do oráculo (14,74%) sem nunca ter
 recebido a informação de qual braço é o melhor — descobre sozinho, pagando o preço da exploração
-(por isso não chega nos 14,74%: parte das rodadas ele ainda testa `telephone`). `N amostras usadas`
-é menor que os baselines porque o replay descarta toda linha em que o braço escolhido pelo bandit
-não bate com o braço real do histórico (rejection sampling — não dá pra saber o resultado de uma
-ação que não foi de fato tomada).
+(por isso não chega nos 14,74%: parte das rodadas ele ainda testa `telephone`).
 
-Gerar/atualizar esta tabela: `uv run python -m bm.evaluation`.
+O Epsilon-Greedy fica quase preso na taxa-base (11,31%, mal acima dos 11,27% globais) — resultado
+esperado, não bug: por ser **não-contextual**, ele só aprende via a média bruta de reward por
+braço, atualizada apenas nas linhas em que o braço escolhido bate com o histórico (rejection
+sampling). Como o histórico já é enviesado para `cellular` por razões que o Epsilon-Greedy não
+enxerga (é cego ao contexto do cliente), ele demora muito mais para separar os dois braços do que
+o Thompson contextual — que usa as features do cliente para refinar a estimativa a cada rodada.
+É o contraste que a Etapa 4 pede: o algoritmo mais simples mal supera a regra ingênua; o contextual
+se aproxima do oráculo. `N amostras usadas` varia entre políticas porque o replay descarta toda
+linha em que o braço escolhido não bate com o braço real do histórico — quanto mais a política
+"imita" o padrão histórico de escolha, mais linhas sobrevivem ao rejection sampling.
+
+Gerar/atualizar esta tabela: `uv run python -m bm.evaluation` (roda as duas simulações, 10 seeds
+cada, ~1-2min).
 
 **Nota sobre o algoritmo:** este Thompson Sampling é **contextual** (regressão linear Bayesiana
 por braço, usa as features do cliente), não o Beta-Bernoulli de 2 braços sem contexto que o plano
@@ -256,7 +277,7 @@ experimentos. Para conectar:
 cp .env.example .env     # preencher com a URL e a senha (peça ao Gabriel)
 ```
 
-Feito isso, nada mais muda: `uv run python -m src.data_prep` já loga no servidor e
+Feito isso, nada mais muda: `uv run python -m bm.data_prep` já loga no servidor e
 `uv run mlflow-ui` abre a UI compartilhada. **Sem `.env`, tudo funciona offline** em
 `mlruns/mlflow.db` (fallback local, só na sua máquina).
 
@@ -299,9 +320,8 @@ produção** é o sinal de **monitoramento** que indicaria a necessidade de um r
 se a conversão de um braço cair de forma sustentada, é sinal de que o comportamento do cliente
 mudou (*drift*) e o bandit precisa reaprender, não só seguir ajustando incrementalmente.
 
-**Ainda pendente:** instrumentar os runs reais da Etapa 3 com `log_bandit_run` assim que o
-`train_bandit` do Adryen estiver pronto (logar `n_arms`, priors/epsilon, seed, conversão, regret
-e `n_matched` de cada rodada).
+Ambas as políticas (`run_thompson_replay.py`, `run_epsilon_replay.py`) já logam cada seed via
+`log_bandit_run` — `n_arms`, priors/epsilon, seed, conversão, regret e `n_matched` de cada rodada.
 
 ## 9. Limitações
 
@@ -337,20 +357,29 @@ data/processed/
 docs/data-dictionary.md         # dicionário raw + processed
 notebooks/
   01-eda.ipynb                  # EDA, leakage e escolha dos braços (Etapa 1)          ✅
-src/
+src/bm/
   data_prep.py                  # contrato de dados: load_raw/clean/build_bandit_frame  ✅
   tracking.py                   # configuração única do MLflow                          ✅
-  bandit.py                     # EpsilonGreedy / ThompsonSampling (Etapa 3)     ⬜ esqueleto
-  api.py                        # FastAPI: /recommend, /feedback, /health (Etapa 5) ⬜ esqueleto
+  mlflow_logging.py             # wrapper log_bandit_run (Etapa 7)                      ✅
+  evaluation.py                 # tabela de métricas da Etapa 4.1                       ✅
+  golden_set.py                 # 5 clientes + recomendação (Etapa 4.2)                 ✅
+  api.py                        # FastAPI: /recommend, /feedback, /health (Etapa 5)     ✅
+  models/
+    bandit.py                   # EpsilonGreedy / ThompsonSampling (Etapa 3)            ✅
+  experiments/
+    train.py                    # replay/rejection sampling genérico (Etapa 3)          ✅
+    run_thompson_replay.py      # 10 seeds Thompson + log MLflow (Etapa 4.1/7.1)        ✅
+    run_epsilon_replay.py       # 10 seeds Epsilon-Greedy + log MLflow (Etapa 4.1/7.1)  ✅
 models/
   preprocessor.joblib           # encoder ajustado no treino (Etapa 2)
-  bandit_state.json             # estado do bandit (Etapa 5) — ainda não existe
-reports/figures/                # gráficos usados no README e no vídeo
-tests/                          # pytest (Etapa 4) — ainda vazio
+  thompson.joblib               # Thompson treinado no replay completo (Etapa 3)
+  bandit_state.json             # estado do bandit servido pela API (Etapa 5) — não versionado
+reports/figures/                # gráficos usados no README e no vídeo — pendente (Etapa 3.4)
+tests/                          # pytest (Etapa 4.3)                                    ✅
 mlruns/
   mlflow.db                     # MLflow: banco sqlite + artefatos (não versionado)
   artifacts/
 ```
 
-`src/` existe justamente para que a API, a simulação do bandit e a avaliação chamem **as mesmas**
+`src/bm/` existe justamente para que a API, a simulação do bandit e a avaliação chamem **as mesmas**
 funções de limpeza/encoding — em vez de duplicar a lógica do notebook e criar train/serving skew.

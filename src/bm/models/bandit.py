@@ -43,14 +43,37 @@ class BaselineBasic:
         return
 
 class EpsilonGreedy:
-    def __init__(self):
-        return
-    
+    """Epsilon-Greedy clássico (plano seção 3.2) -- contraponto simples ao Thompson
+    contextual do Adryen na tabela de comparação da Etapa 4.1.
+
+    Ignora o vetor de contexto do cliente de propósito: ao contrário do
+    `ThompsonSampling` (regressão linear bayesiana por braço), esta é a variante
+    não-contextual do plano -- só conta reward médio por braço. `select_arm`/`update`
+    recebem `customer` para manter a mesma interface que `train_bandit` (Etapa 3) e a
+    API (Etapa 5) usam pros dois algoritmos, mas o valor não é lido.
+    """
+
+    def __init__(self, epsilon: float = 0.1, seed: int | None = None):
+        self.epsilon = epsilon
+        self.rng = np.random.default_rng(seed)
+        self.arms = ["cellular", "telephone"]
+        self.counts = {arm: 0 for arm in self.arms}
+        self.rewards_sum = {arm: 0.0 for arm in self.arms}
+
+    def _mean_reward(self, arm: str) -> float:
+        n = self.counts[arm]
+        return self.rewards_sum[arm] / n if n > 0 else 0.0
+
     def select_arm(self, customer):
-        return
-    
+        if self.rng.random() < self.epsilon:
+            return self.rng.choice(self.arms)
+
+        medias = {arm: self._mean_reward(arm) for arm in self.arms}
+        return max(medias, key=medias.get)
+
     def update(self, arm, customer, reward):
-        return
+        self.counts[arm] += 1
+        self.rewards_sum[arm] += reward
     
 @dataclass
 class ArmState:
