@@ -17,12 +17,12 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 |---|---|---|
 | 0 — Organização | estrutura, `uv`, README | ✅ concluída |
 | 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
-| 2 — Preparação da base | `src/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
-| 3 — Baseline e bandit | `src/bandit.py` | ⬜ esqueleto |
-| 4 — Avaliação e golden set | `tests/` | ⬜ não iniciada |
-| 5 — API | `src/api.py` | ⬜ esqueleto |
-| 6 — Arquitetura em nuvem | seção 7 deste README | ⬜ não iniciada |
-| 7 — MLOps / MLflow | instrumentação da Etapa 3 | ⬜ parcial (Etapa 2 já loga) |
+| 2 — Preparação da base | `src/bm/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
+| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/` | ✅ concluída (Thompson contextual + Epsilon-Greedy, ambos treinados) |
+| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | ✅ concluída (tabela e golden set com as duas políticas) |
+| 5 — API | `src/bm/api.py` | ✅ concluída (`/recommend`, `/feedback`, `/health`) |
+| 6 — Arquitetura em nuvem | seção 7 deste README | ✅ concluída |
+| 7 — MLOps / MLflow | `src/bm/mlflow_logging.py`, `src/bm/experiments/run_thompson_replay.py`, `run_epsilon_replay.py` | ✅ Thompson e Epsilon-Greedy instrumentados (10 seeds cada, média ± desvio) |
 | 8 — Apresentação | vídeo | ⬜ não iniciada |
 
 ---
@@ -102,40 +102,167 @@ Ambiente gerenciado com [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv
 ```bash
 uv sync                                   # cria o .venv a partir do lockfile
 uv run jupyter lab                        # abre os notebooks
-uv run python -m src.data_prep            # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
+uv run python -m bm.data_prep             # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
 uv run pytest -q                          # testes
 uv run mlflow-ui                          # abre a UI do MLflow (localhost:5000)
+uv run uvicorn bm.api:app --reload        # Etapa 5: sobe a API em localhost:8000
 ```
 
 Requer Python >= 3.13. O CSV bruto já está em `data/raw/`; se faltar, o notebook de EDA o baixa do
-Kaggle automaticamente (requer `~/.kaggle/kaggle.json`).
+Kaggle automaticamente (requer `~/.kaggle/kaggle.json`). A API exige `models/preprocessor.joblib`
+(Etapa 2) e `models/thompson.joblib` (Etapa 3) presentes — ambos já estão commitados no repo.
 
-> **Estado atual: Etapas 0, 1 e 2 concluídas.** `src/bandit.py` (Etapa 3) e `src/api.py` (Etapa 5)
-> ainda são esqueletos — o comando `uv run uvicorn src.api:app --reload` só funcionará depois da
-> Etapa 5.
+Com a API no ar, a documentação interativa (Swagger) fica em `http://localhost:8000/docs`.
 
-<!-- TODO Matheus: exemplos de curl para /recommend e /feedback + screenshot do Swagger -->
+```bash
+curl http://localhost:8000/health
+
+curl -X POST http://localhost:8000/recommend \
+  -H "Content-Type: application/json" \
+  -d '{
+        "job": "admin.", "marital": "married", "education": "university.degree",
+        "default": "no", "housing": "yes", "loan": "no", "month": "may",
+        "day_of_week": "mon", "poutcome": "nonexistent", "age": 35, "campaign": 1,
+        "previous": 0, "emp.var.rate": 1.1, "cons.price.idx": 93.9,
+        "cons.conf.idx": -36.4, "euribor3m": 4.86, "nr.employed": 5191.0,
+        "was_contacted_before": false
+      }'
+# -> {"arm": "cellular", "arm_scores": {"cellular": 0.05, "telephone": -0.01}, "policy": "thompson"}
+
+curl -X POST http://localhost:8000/feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+        "customer": {
+          "job": "admin.", "marital": "married", "education": "university.degree",
+          "default": "no", "housing": "yes", "loan": "no", "month": "may",
+          "day_of_week": "mon", "poutcome": "nonexistent", "age": 35, "campaign": 1,
+          "previous": 0, "emp.var.rate": 1.1, "cons.price.idx": 93.9,
+          "cons.conf.idx": -36.4, "euribor3m": 4.86, "nr.employed": 5191.0,
+          "was_contacted_before": false
+        },
+        "arm": "cellular",
+        "reward": 1
+      }'
+# -> {"status": "updated", "arm": "cellular", "reward": 1}
+```
+
+`/feedback` recebe o mesmo contexto do cliente usado em `/recommend` (não só `arm`/`reward`):
+o Thompson Sampling é contextual, então `bandit.update()` precisa do vetor de features do
+cliente para atualizar a crença por braço, não só do resultado. Cada chamada a `/feedback`
+regrava `models/bandit_state.json` — é o que faz o bandit continuar aprendendo entre restarts
+da API (ver seção 8).
 
 ## 4. Formulação do bandit
 
 <!-- responsável: Adryen -->
-<!-- TODO: Epsilon-Greedy vs Thompson Sampling; priors Beta(1,1) = uniforme/não-informativo -->
+
+Duas políticas implementadas em `src/bm/models/bandit.py`, mesma interface `select_arm()`/`update()`:
+
+- **Epsilon-Greedy (`epsilon=0.1`)** — clássica, não-contextual: conta a média de reward observada
+  por braço; com probabilidade `epsilon` explora um braço aleatório, senão explota o de maior média.
+  Ignora as features do cliente de propósito — é o contraponto simples da tabela de comparação.
+- **Thompson Sampling contextual** — regressão linear Bayesiana por braço (não o Beta-Bernoulli de
+  2 braços sem contexto que o plano sugere como opção mais simples). **Prior documentado**: cada
+  braço parte de `Normal(0, alpha² · I)` sobre os coeficientes, com `alpha=1.0` — o equivalente
+  não-informativo ao `Beta(1,1)`, nenhum braço é favorecido antes de ver dados. A cada rodada,
+  amostra `theta ~ N(mu, alpha² · A⁻¹)` de cada braço e escolhe o de maior `theta @ x`; `update`
+  faz o passo fechado de regressão linear bayesiana (`A += x xᵀ`, `b += reward · x`, `A⁻¹` via
+  Sherman-Morrison).
 
 ## 5. Resultados
 
 <!-- responsável: Adryen -->
-<!-- TODO: tabela conversão/regret por política, gráfico de conversão acumulada,
-     análise exploração × explotação, média ± desvio sobre múltiplas seeds -->
+
+### Tabela comparativa (Etapa 4.1 — Bertelli)
+
+As duas primeiras linhas vêm direto do histórico (`arm_stats`, sem simular nada — é a taxa de
+conversão real de quem sempre usou aquele canal). Epsilon-Greedy e Thompson Sampling são a média ±
+desvio de 10 seeds, via replay/rejection sampling sobre o `bandit_frame` completo
+(`run_epsilon_replay` / `run_thompson_replay`).
+
+| Política | Conversão (replay) | Regret acumulado | N amostras usadas |
+|---|---|---|---|
+| Regra fixa (telephone) | 5,23% | alto | 15.041 |
+| Melhor braço histórico (cellular) | 14,74% | 0 (oráculo) | 26.135 |
+| Epsilon-Greedy (epsilon=0.1, média de 10 seeds) | 11,31% ± 0,11pp | 1.221,6 ± 58,0 | 35.647 |
+| Thompson Sampling (média de 10 seeds) | 12,68% ± 0,23pp | 446,9 ± 46,3 | 21.714 |
+
+O Thompson esmaga a regra fixa (5,23% → ~12,7%) e chega perto do oráculo (14,74%) sem nunca ter
+recebido a informação de qual braço é o melhor — descobre sozinho, pagando o preço da exploração
+(por isso não chega nos 14,74%: parte das rodadas ele ainda testa `telephone`).
+
+O Epsilon-Greedy fica quase preso na taxa-base (11,31%, mal acima dos 11,27% globais) — resultado
+esperado, não bug: por ser **não-contextual**, ele só aprende via a média bruta de reward por
+braço, atualizada apenas nas linhas em que o braço escolhido bate com o histórico (rejection
+sampling). Como o histórico já é enviesado para `cellular` por razões que o Epsilon-Greedy não
+enxerga (é cego ao contexto do cliente), ele demora muito mais para separar os dois braços do que
+o Thompson contextual — que usa as features do cliente para refinar a estimativa a cada rodada.
+É o contraste que a Etapa 4 pede: o algoritmo mais simples mal supera a regra ingênua; o contextual
+se aproxima do oráculo. `N amostras usadas` varia entre políticas porque o replay descarta toda
+linha em que o braço escolhido não bate com o braço real do histórico — quanto mais a política
+"imita" o padrão histórico de escolha, mais linhas sobrevivem ao rejection sampling.
+
+Gerar/atualizar esta tabela: `uv run python -m bm.evaluation` (roda as duas simulações, 10 seeds
+cada, ~1-2min).
+
+**Nota sobre o algoritmo:** este Thompson Sampling é **contextual** (regressão linear Bayesiana
+por braço, usa as features do cliente), não o Beta-Bernoulli de 2 braços sem contexto que o plano
+sugere como opção mais simples. O prior é `Normal(0, alpha² · I)` sobre os coeficientes de cada
+braço, com `alpha=1.0` — o equivalente não-informativo ao `Beta(1,1)`: antes de ver dados, nenhum
+braço é favorecido.
+
+<!-- TODO Adryen: gráfico de conversão acumulada, análise exploração × explotação -->
 
 ## 6. Golden Set
 
 <!-- responsável: Bertelli -->
-<!-- TODO: 5 clientes de teste, recomendação do sistema e justificativa de cada um -->
+
+5 clientes do split de teste (últimos 20%, fora do que o bandit usou pra treinar), um por perfil
+sugerido no plano. `arm` é o canal que o banco realmente usou historicamente; `arm_recomendado` é
+o que o Thompson treinado escolheria hoje (pela média da posterior de cada braço, sem sortear —
+resultado reprodutível).
+
+| Perfil | Canal real (histórico) | Canal recomendado | Justificativa |
+|---|---|---|---|
+| Jovem, sucesso em contato anterior | cellular | **telephone** | Alta propensão esperada (`poutcome=success`), mas o bandit não priorizou `cellular` para este cliente — contraintuitivo, ver "Limitações" abaixo. |
+| Aposentado, nunca contatado | cellular | cellular | Aposentados convertem acima da média mesmo sem contato prévio; recomendação bate com a expectativa. |
+| Blue-collar, casado, com empréstimo | cellular | cellular | Perfil historicamente menos propenso; o bandit ainda assim pende para `cellular` (taxa geral do canal é maior). |
+| Saturado de contatos (campaign ≥ 6) | cellular | cellular | Muitos contatos sem sinal de conversão; recomendação segue o canal de maior taxa histórica. |
+| Muitos campos "unknown" | cellular | cellular | Testa robustez do pipeline com dado incompleto — o preprocessor (`handle_unknown="ignore"`) não quebra. |
+
+Gerar/atualizar esta tabela: `uv run python -m bm.golden_set`.
+
+**Atenção — vale revisar antes da apresentação:** no primeiro caso ("alta propensão"), o bandit
+recomendou o canal *oposto* ao que a intuição sugeria. Isso pode ser (a) ruído de uma seed
+específica, (b) o bandit contextual captando um sinal real que a EDA não separou, ou (c) sintoma do
+bug do replay já corrigido em `train.py` ainda deixar a política pouco decidida para casos fora do
+padrão. Vale rodar `run_thompson_replay` de novo com outras seeds e comparar antes de afirmar
+qualquer coisa sobre esse cliente no vídeo.
 
 ## 7. Arquitetura em nuvem
 
 <!-- responsável: Matheus -->
-<!-- TODO: mapeamento 1:1 dos artefatos do repo para serviços gerenciados -->
+
+Mapeamento 1:1 do que já existe no repo para serviços gerenciados (AWS como referência; os
+equivalentes em GCP/Azure são diretos):
+
+| Artefato / processo do repo | Serviço gerenciado | Por quê |
+|---|---|---|
+| `bm.api:app` (FastAPI, `POST /recommend`, `POST /feedback`) | Container em **ECS Fargate** (ou App Runner) atrás de um **Application Load Balancer** | Serviço stateless que precisa escalar horizontalmente e expor HTTP — não há servidor pra gerenciar. |
+| `models/preprocessor.joblib`, `models/thompson.joblib` | **S3**, baixados no `lifespan` do container (ou empacotados na imagem) | Artefatos versionados de treino; o container não deve depender de disco local persistente pra eles. |
+| `models/bandit_state.json` | **DynamoDB** (um item com o estado por braço) no lugar do JSON em disco | O JSON local só sobrevive num único container; em produção múltiplas réplicas do serviço precisam ler/escrever a **mesma** crença — precisa de um store compartilhado e consistente entre instâncias. |
+| `data/raw/`, `data/processed/` | **S3** (raw e processed em prefixos separados) | Mesmo motivo do `mlruns/`: binário/grande, não pertence ao git. |
+| Servidor MLflow (`deploy/docker-compose.yml`) | **ECS Fargate** + backend **RDS Postgres** (troca o SQLite) + artefatos em **S3** | SQLite não aguenta múltiplos escritores concorrentes; é o mesmo problema que hoje nos impede de commitar `mlflow.db` no repo. |
+| `uv run python -m bm.data_prep` (Etapa 2) e o retreino periódico do bandit | **Job agendado** (ECS Scheduled Task / Lambda + EventBridge) | Não é um serviço sempre-ligado; roda sob demanda ou em cron. |
+| `POST /feedback` → drift de conversão por braço | **CloudWatch** (métricas custom logadas pela API) + alarme | É o gatilho de retreino/reset citado na seção 8: se a conversão de um braço cair de forma sustentada, o alarme deveria disparar o job de retreino. |
+| Segredos (`.env`, credencial do MLflow) | **Secrets Manager**, injetado como variável de ambiente no container | Mesma razão do `.env` ser gitignored — só que a versão de produção não pode depender de um arquivo copiado manualmente. |
+
+**Ponto que muda de verdade em relação ao que existe hoje:** `models/bandit_state.json` funciona
+para um único processo local, mas não é a arquitetura certa com mais de uma réplica da API atrás
+do load balancer — duas réplicas escrevendo em arquivos JSON separados divergiriam silenciosamente
+(cada uma aprenderia uma crença diferente). Em nuvem, o estado do bandit precisa sair do
+filesystem do container e virar um recurso compartilhado (DynamoDB, ou Postgres/Redis) que todas
+as réplicas leem e atualizam.
 
 ## 8. MLOps (ciclo de vida)
 
@@ -150,7 +277,7 @@ experimentos. Para conectar:
 cp .env.example .env     # preencher com a URL e a senha (peça ao Gabriel)
 ```
 
-Feito isso, nada mais muda: `uv run python -m src.data_prep` já loga no servidor e
+Feito isso, nada mais muda: `uv run python -m bm.data_prep` já loga no servidor e
 `uv run mlflow-ui` abre a UI compartilhada. **Sem `.env`, tudo funciona offline** em
 `mlruns/mlflow.db` (fallback local, só na sua máquina).
 
@@ -179,9 +306,22 @@ A Etapa 2 já loga (parâmetros da limpeza, taxa-base, conversão por braço, `p
 uv run mlflow-ui        # localhost:5000 — ou `uv run mlflow-ui 5001` para outra porta
 ```
 
-<!-- TODO Bertelli: instrumentar a Etapa 3 (priors, epsilon, seed, regret, n_matched) e escrever o
-     parágrafo do ciclo: dados → experimento → estado do bandit → serving → feedback →
-     monitoramento → reset em drift -->
+### Ciclo de vida (dados → experimento → produção → feedback)
+
+O ciclo completo deste projeto: os **dados** ficam versionados em `data/` (raw e processado,
+com o contrato de `data_prep.py` garantindo que todo mundo aplica a mesma transformação); cada
+rodada de simulação do bandit vira um **experimento rastreado** no MLflow
+(`src/bm/mlflow_logging.py`), com os parâmetros (política, priors, epsilon, seed) e as métricas
+(conversão, regret, N) registrados via `log_bandit_run`; o **estado do bandit** (a crença sobre
+cada braço) é salvo como **artefato versionado** desse run; esse artefato é o que a **API
+(Etapa 5)** carrega pra servir recomendações; cada resposta real de cliente (`POST /feedback`)
+**realimenta o modelo**, fechando o loop online; e a **conversão por braço observada em
+produção** é o sinal de **monitoramento** que indicaria a necessidade de um retreino ou reset —
+se a conversão de um braço cair de forma sustentada, é sinal de que o comportamento do cliente
+mudou (*drift*) e o bandit precisa reaprender, não só seguir ajustando incrementalmente.
+
+Ambas as políticas (`run_thompson_replay.py`, `run_epsilon_replay.py`) já logam cada seed via
+`log_bandit_run` — `n_arms`, priors/epsilon, seed, conversão, regret e `n_matched` de cada rodada.
 
 ## 9. Limitações
 
@@ -217,20 +357,29 @@ data/processed/
 docs/data-dictionary.md         # dicionário raw + processed
 notebooks/
   01-eda.ipynb                  # EDA, leakage e escolha dos braços (Etapa 1)          ✅
-src/
+src/bm/
   data_prep.py                  # contrato de dados: load_raw/clean/build_bandit_frame  ✅
   tracking.py                   # configuração única do MLflow                          ✅
-  bandit.py                     # EpsilonGreedy / ThompsonSampling (Etapa 3)     ⬜ esqueleto
-  api.py                        # FastAPI: /recommend, /feedback, /health (Etapa 5) ⬜ esqueleto
+  mlflow_logging.py             # wrapper log_bandit_run (Etapa 7)                      ✅
+  evaluation.py                 # tabela de métricas da Etapa 4.1                       ✅
+  golden_set.py                 # 5 clientes + recomendação (Etapa 4.2)                 ✅
+  api.py                        # FastAPI: /recommend, /feedback, /health (Etapa 5)     ✅
+  models/
+    bandit.py                   # EpsilonGreedy / ThompsonSampling (Etapa 3)            ✅
+  experiments/
+    train.py                    # replay/rejection sampling genérico (Etapa 3)          ✅
+    run_thompson_replay.py      # 10 seeds Thompson + log MLflow (Etapa 4.1/7.1)        ✅
+    run_epsilon_replay.py       # 10 seeds Epsilon-Greedy + log MLflow (Etapa 4.1/7.1)  ✅
 models/
   preprocessor.joblib           # encoder ajustado no treino (Etapa 2)
-  bandit_state.json             # estado do bandit (Etapa 5) — ainda não existe
-reports/figures/                # gráficos usados no README e no vídeo
-tests/                          # pytest (Etapa 4) — ainda vazio
+  thompson.joblib               # Thompson treinado no replay completo (Etapa 3)
+  bandit_state.json             # estado do bandit servido pela API (Etapa 5) — não versionado
+reports/figures/                # gráficos usados no README e no vídeo — pendente (Etapa 3.4)
+tests/                          # pytest (Etapa 4.3)                                    ✅
 mlruns/
   mlflow.db                     # MLflow: banco sqlite + artefatos (não versionado)
   artifacts/
 ```
 
-`src/` existe justamente para que a API, a simulação do bandit e a avaliação chamem **as mesmas**
+`src/bm/` existe justamente para que a API, a simulação do bandit e a avaliação chamem **as mesmas**
 funções de limpeza/encoding — em vez de duplicar a lógica do notebook e criar train/serving skew.
