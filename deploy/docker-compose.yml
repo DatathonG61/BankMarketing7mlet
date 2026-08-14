@@ -37,6 +37,16 @@ services:
       # Interno, nao precisa mexer.
       - MLFLOW_AUTH_CONFIG_PATH=/mlflow/auth.ini
 
+      # MLflow 3 bloqueia requests cross-origin da propria UI (protecao CSRF/DNS-rebinding, no
+      # modulo mlflow.server.fastapi_security). Atras da Cloudflare o TLS termina na borda e o
+      # container recebe via tunnel, entao ele ve a origem publica como cross-origin e devolve 403
+      # nos POST .../search (runs, metrics, traces, datasets, logged-models) -- a UI carrega mas
+      # nao renderiza os valores. `--allowed-hosts '*'` NAO cobre essa checagem de Origin; a origem
+      # publica precisa ser allowlisted aqui. Definir no painel do Coolify, ex.:
+      #     MLFLOW_SERVER_CORS_ALLOWED_ORIGINS=https://mlflow.<host>
+      # NAO usar '*' -- isso desliga o CORS credenciado e as chamadas autenticadas caem em 401.
+      - MLFLOW_SERVER_CORS_ALLOWED_ORIGINS
+
     expose:
       - "5000"
 
