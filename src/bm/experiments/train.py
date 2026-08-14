@@ -15,7 +15,7 @@ def train_bandit(bandit, train_data, preprocessor):
 
     size = len(train_data)
     for step in range(size):
-        print("Rodando step %d de %d", step, size)
+        print(f"Rodando step {step} de {size}")
 
         customer = X[step]
 
