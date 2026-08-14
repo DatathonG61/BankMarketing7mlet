@@ -222,3 +222,7 @@ mlruns/
 
 # Kaggle credentials
 kaggle.json
+
+# Estado do bandit servido pela API (Etapa 5): reconstruido em runtime a partir de
+# models/thompson.joblib, mutavel a cada /feedback -- nao versionar (mesmo motivo do mlruns/).
+models/bandit_state.json
