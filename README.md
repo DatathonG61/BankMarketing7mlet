@@ -18,7 +18,7 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 | 0 — Organização | estrutura, `uv`, README | ✅ concluída |
 | 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
 | 2 — Preparação da base | `src/bm/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
-| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/` | ✅ concluída (Thompson contextual + Epsilon-Greedy, ambos treinados) |
+| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/`, `src/bm/exploration.py` | ✅ concluída (Thompson contextual + Epsilon-Greedy + análise de exploração da 3.4) |
 | 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | ✅ concluída (tabela e golden set com as duas políticas) |
 | 5 — API | `src/bm/api.py` | ✅ concluída (`/recommend`, `/feedback`, `/health`) |
 | 6 — Arquitetura em nuvem | seção 7 deste README | ✅ concluída |
@@ -103,6 +103,7 @@ Ambiente gerenciado com [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv
 uv sync                                   # cria o .venv a partir do lockfile
 uv run jupyter lab                        # abre os notebooks
 uv run python -m bm.data_prep             # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
+uv run python -m bm.exploration           # Etapa 3.4: gera as figuras em reports/figures/
 uv run pytest -q                          # testes
 uv run mlflow-ui                          # abre a UI do MLflow (localhost:5000)
 uv run uvicorn bm.api:app --reload        # Etapa 5: sobe a API em localhost:8000
@@ -192,13 +193,7 @@ recebido a informação de qual braço é o melhor — descobre sozinho, pagando
 (por isso não chega nos 14,74%: parte das rodadas ele ainda testa `telephone`).
 
 O Epsilon-Greedy fica quase preso na taxa-base (11,31%, mal acima dos 11,27% globais) — resultado
-esperado, não bug: por ser **não-contextual**, ele só aprende via a média bruta de reward por
-braço, atualizada apenas nas linhas em que o braço escolhido bate com o histórico (rejection
-sampling). Como o histórico já é enviesado para `cellular` por razões que o Epsilon-Greedy não
-enxerga (é cego ao contexto do cliente), ele demora muito mais para separar os dois braços do que
-o Thompson contextual — que usa as features do cliente para refinar a estimativa a cada rodada.
-É o contraste que a Etapa 4 pede: o algoritmo mais simples mal supera a regra ingênua; o contextual
-se aproxima do oráculo. `N amostras usadas` varia entre políticas porque o replay descarta toda
+esperado, não bug. `N amostras usadas` varia entre políticas porque o replay descarta toda
 linha em que o braço escolhido não bate com o braço real do histórico — quanto mais a política
 "imita" o padrão histórico de escolha, mais linhas sobrevivem ao rejection sampling.
 
@@ -211,7 +206,65 @@ sugere como opção mais simples. O prior é `Normal(0, alpha² · I)` sobre os 
 braço, com `alpha=1.0` — o equivalente não-informativo ao `Beta(1,1)`: antes de ver dados, nenhum
 braço é favorecido.
 
-<!-- TODO Adryen: gráfico de conversão acumulada, análise exploração × explotação -->
+### Análise de exploração × explotação (Etapa 3.4)
+
+Exigência textual do enunciado, na coluna "evidência esperada" da tabela de referências
+algorítmicas: *análise de exploração* para o Thompson e *análise do trade-off entre exploração e
+conversão* para o Epsilon-Greedy. A tabela acima diz qual política converte mais; esta seção mostra
+**quanto tráfego cada uma gasta testando o braço pior** para chegar lá.
+
+Gerar as figuras: `uv run python -m bm.exploration` (3 seeds, ~2min). As figuras usam 3 seeds; os
+números da tabela continuam vindo das 10 seeds de `run_thompson_replay` / `run_epsilon_replay`.
+
+| Política | Tráfego no braço pior (total) | Tráfego no braço pior (últimos 20%) | Conversão no replay |
+|---|---|---|---|
+| Thompson Sampling | 46,8% | 34,0% | 12,63% |
+| Epsilon-Greedy (ε=0.1) | 31,8% | 5,2% | 11,29% |
+
+O resultado é contraintuitivo e é o ponto mais interessante desta etapa: **o Thompson gasta mais
+tráfego em `telephone` que o Epsilon-Greedy e ainda assim converte mais.** Não é contradição —
+"explorar menos" e "decidir melhor" são coisas diferentes. O Epsilon-Greedy é não-contextual: ele
+colapsa para um único braço global e os 5,2% finais são exatamente a sua exploração aleatória
+residual (`ε=0.1` dividido entre 2 braços = 5%). O Thompson é contextual: ele não escolhe *um*
+braço, escolhe **por cliente** — os 34% de `telephone` no fim não são indecisão, são clientes para
+os quais o modelo estima que `telephone` é a melhor ação.
+
+![Fração de escolha por braço ao longo das rodadas](reports/figures/escolha_por_braco.png)
+
+O painel do Epsilon-Greedy revela um comportamento que a tabela de métricas escondia: **ele trava
+em `telephone` durante as primeiras ~13.000 rodadas** e só então vira para `cellular`. A causa está
+nos dados, não no algoritmo — as primeiras **12.355 linhas da base são 100% `telephone`**; a
+primeira linha `cellular` só aparece no índice 12.355. Como o Epsilon-Greedy começa com média zero
+nos dois braços e escolhe `cellular` no desempate, todas as suas escolhas iniciais são descartadas
+pelo rejection sampling (não existe linha `cellular` para casar), então `cellular` nunca atualiza;
+`telephone` só é escolhido pelos 5% de exploração aleatória, casa com o histórico, registra uma
+conversão e passa a ser o argmax. É um caso de manual de por que uma política cega ao contexto é
+frágil sob mudança de regime — e um bom argumento de negócio para o vídeo.
+
+![Conversão acumulada contra os baselines](reports/figures/conversao_acumulada.png)
+
+As duas curvas compartilham o eixo de tempo (posição cronológica na base), não o índice de rodadas
+aproveitadas — sem isso não seriam comparáveis, já que o Thompson aproveita ~21 mil linhas e o
+Epsilon-Greedy ~36 mil. A subida acentuada no trecho final é **drift**, não mérito: a conversão da
+base sobe de 2,9% no começo para mais de 17% no fim. As linhas horizontais são médias do período
+inteiro, então as curvas cruzam a regra fixa em parte por efeito de calendário. A comparação
+honesta é entre as duas curvas.
+
+![Regret acumulado por política](reports/figures/regret_acumulado.png)
+
+O regret do Thompson fica consistentemente abaixo do Epsilon-Greedy em toda a campanha. As duas
+curvas **caem** no trecho final pelo mesmo motivo de drift: no fim da base a conversão do período
+supera os 14,74% da média do oráculo, então o regret medido contra essa média encolhe.
+
+![Evolução da crença do Thompson por braço](reports/figures/posterior_thompson.png)
+
+O plano previa plotar as densidades Beta de um Thompson Beta-Bernoulli. Como o Thompson
+implementado é contextual, não existe uma Beta para plotar — a crença é uma normal multivariada
+sobre coeficientes, não uma distribuição sobre uma taxa escalar. O equivalente é a distribuição do
+score posterior (`mu_braço @ x`) sobre uma amostra fixa de clientes: no fim do replay a crença de
+`cellular` está deslocada para a direita da de `telephone`, mas com **sobreposição grande** — o
+modelo separa os braços na média sem separá-los para todo cliente. É exatamente por isso que ele
+continua mandando 34% do tráfego para `telephone`.
 
 ## 6. Golden Set
 
@@ -232,12 +285,14 @@ resultado reprodutível).
 
 Gerar/atualizar esta tabela: `uv run python -m bm.golden_set`.
 
-**Atenção — vale revisar antes da apresentação:** no primeiro caso ("alta propensão"), o bandit
-recomendou o canal *oposto* ao que a intuição sugeria. Isso pode ser (a) ruído de uma seed
-específica, (b) o bandit contextual captando um sinal real que a EDA não separou, ou (c) sintoma do
-bug do replay já corrigido em `train.py` ainda deixar a política pouco decidida para casos fora do
-padrão. Vale rodar `run_thompson_replay` de novo com outras seeds e comparar antes de afirmar
-qualquer coisa sobre esse cliente no vídeo.
+**Sobre o primeiro caso ("alta propensão"), que recomenda `telephone`:** era uma dúvida em aberto,
+e a análise da Etapa 3.4 respondeu. Não é ruído de seed nem resíduo do bug de replay já corrigido:
+a vantagem de `cellular` sobre `telephone` é muito menor do que os 14,74% × 5,23% da tabela
+sugerem, porque aquela diferença está **confundida com o período** (ver "Limitações"). Restrito às
+linhas em que os dois canais coexistem na base, o `telephone` converte 13,18% contra 14,74% do
+`cellular` — 1,6 ponto de diferença, não 9,5. Com uma diferença dessa ordem, é esperado que um
+modelo contextual prefira `telephone` para parte dos clientes; a figura da crença posterior mostra
+justamente distribuições muito sobrepostas. A recomendação é defensável no vídeo.
 
 ## 7. Arquitetura em nuvem
 
@@ -343,8 +398,34 @@ prevendo 6% num mundo de 31% — completamente descalibrado, enquanto o bandit s
 feedback. Mas é também um **alerta de leitura**: qualquer métrica medida no golden set vai parecer
 excelente pelo motivo errado — o período é fácil, não o modelo é bom.
 
-<!-- TODO: avaliação offline por replay ≠ produção (só sabemos o desfecho da ação que de fato
-     aconteceu); dados de 2008–2010 não representam o mercado atual -->
+**A vantagem de `cellular` sobre `telephone` está confundida com o período.** É a limitação mais
+importante que encontramos, e ela relativiza o número que abre este README. A base não usou os dois
+canais ao mesmo tempo: as primeiras **12.355 linhas são 100% `telephone`**, justamente o período de
+conversão mais baixa (2,9% nas primeiras 5.000 linhas). Ou seja, 82% dos contatos por `telephone`
+aconteceram antes de o `cellular` sequer entrar em operação.
+
+| Recorte | `cellular` | `telephone` | Diferença |
+|---|---|---|---|
+| Período inteiro (o número da tabela da Etapa 3) | 14,74% | 5,23% | **9,5 p.p.** |
+| Só onde os dois canais coexistem (índice ≥ 12.355) | 14,74% | 13,18% | **1,6 p.p.** |
+| Últimos 20% (golden set) | 32,18% | 20,97% | 11,2 p.p. |
+
+O `cellular` continua sendo o melhor braço — a diferença não desaparece em nenhum recorte. Mas o
+"quase 3× melhor" do enunciado da nossa própria EDA é, em boa parte, um artefato de *quando* cada
+canal foi usado, não uma propriedade do canal. Duas consequências honestas: (a) o ganho real de
+qualquer política sobre a regra fixa é menor do que a tabela sugere, porque o baseline `telephone`
+está medido no pior período; (b) é por isso que o Thompson contextual manda ~34% do tráfego para
+`telephone` mesmo no fim do replay, e por que a recomendação "contraintuitiva" do golden set é
+defensável.
+
+**A avaliação é offline por replay, e replay não é produção.** O rejection sampling só enxerga o
+desfecho da ação que de fato aconteceu no histórico; quando o bandit escolhe um braço diferente do
+que o banco executou, a linha é descartada e nunca sabemos o que teria acontecido. Nenhum número
+deste README foi obtido com a política decidindo de verdade sobre clientes reais.
+
+**Os dados são de 2008–2010 e não representam o mercado atual.** A base descreve campanhas de um
+banco português durante a crise financeira; taxa de juros, comportamento do cliente e regulação de
+telemarketing mudaram desde então. O valor do projeto está no método, não nos coeficientes.
 
 ---
 
@@ -362,6 +443,7 @@ src/bm/
   tracking.py                   # configuração única do MLflow                          ✅
   mlflow_logging.py             # wrapper log_bandit_run (Etapa 7)                      ✅
   evaluation.py                 # tabela de métricas da Etapa 4.1                       ✅
+  exploration.py                # análise exploração × explotação + figuras (Etapa 3.4)  ✅
   golden_set.py                 # 5 clientes + recomendação (Etapa 4.2)                 ✅
   api.py                        # FastAPI: /recommend, /feedback, /health (Etapa 5)     ✅
   models/
@@ -374,7 +456,7 @@ models/
   preprocessor.joblib           # encoder ajustado no treino (Etapa 2)
   thompson.joblib               # Thompson treinado no replay completo (Etapa 3)
   bandit_state.json             # estado do bandit servido pela API (Etapa 5) — não versionado
-reports/figures/                # gráficos usados no README e no vídeo — pendente (Etapa 3.4)
+reports/figures/                # 4 gráficos da análise de exploração (Etapa 3.4)        ✅
 tests/                          # pytest (Etapa 4.3)                                    ✅
 mlruns/
   mlflow.db                     # MLflow: banco sqlite + artefatos (não versionado)
