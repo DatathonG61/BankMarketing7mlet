@@ -107,20 +107,6 @@ class ThompsonSampling:
             mu = a_inv @ state.b
             cov = (self.alpha ** 2) * a_inv
 
-            #try:
-            #    theta = self.rng.multivariate_normal(mu, cov)
-            #except np.linalg.LinAlgError:
-                #print("Erro ao gerar theta")
-                #print("np.linalg.cond(cov) = ", np.linalg.cond(cov))
-                #print("Menor autovalor:", np.linalg.eigvalsh(cov).min())
-                #print("Maior autovalor:", np.linalg.eigvalsh(cov).max())
-                #print("Tem NaN:", np.isnan(cov).any())
-                #print("Tem Inf:", np.isinf(cov).any())
-                #print("Shape:", cov.shape)
-                #print("All close = " ,np.allclose(cov, cov.T))
-                #print("np.max(np.abs(cov - cov.T)) = ", np.max(np.abs(cov - cov.T)))
-                #raise
-
             L = np.linalg.cholesky(cov)
             z = self.rng.standard_normal(len(mu))
             theta = mu + L @ z
