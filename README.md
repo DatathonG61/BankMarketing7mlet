@@ -18,8 +18,8 @@ para cada cliente, **qual canal de contato usar**, observa a recompensa (o clien
 | 0 — Organização | estrutura, `uv`, README | ✅ concluída |
 | 1 — EDA | `notebooks/01-eda.ipynb`, escolha dos braços | ✅ concluída |
 | 2 — Preparação da base | `src/bm/data_prep.py`, `bandit_frame.parquet`, `preprocessor.joblib` | ✅ concluída |
-| 3 — Baseline e bandit | `src/bm/models/bandit.py`, `src/bm/experiments/`, `src/bm/exploration.py` | ✅ concluída (Thompson contextual + Epsilon-Greedy + análise de exploração da 3.4) |
-| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | ✅ concluída (tabela e golden set com as duas políticas) |
+| 3 — Baseline e bandit | `notebooks/02-bandit.ipynb`, `src/bm/models/bandit.py`, `src/bm/experiments/`, `src/bm/exploration.py` | ✅ concluída (Thompson contextual + Epsilon-Greedy + análise de exploração da 3.4) |
+| 4 — Avaliação e golden set | `tests/`, `src/bm/evaluation.py`, `src/bm/golden_set.py` | ✅ concluída (tabela + golden set em holdout real) |
 | 5 — API | `src/bm/api.py` | ✅ concluída (`/recommend`, `/feedback`, `/health`) |
 | 6 — Arquitetura em nuvem | seção 7 deste README | ✅ concluída |
 | 7 — MLOps / MLflow | `src/bm/mlflow_logging.py`, `src/bm/experiments/run_thompson_replay.py`, `run_epsilon_replay.py` | ✅ Thompson e Epsilon-Greedy instrumentados (10 seeds cada, média ± desvio) |
@@ -101,13 +101,19 @@ Ambiente gerenciado com [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv
 
 ```bash
 uv sync                                   # cria o .venv a partir do lockfile
-uv run jupyter lab                        # abre os notebooks
+uv run jupyter lab                        # abre os notebooks (01-eda, 02-bandit)
 uv run python -m bm.data_prep             # Etapa 2: raw -> bandit_frame.parquet + preprocessor.joblib
+uv run python -m bm.experiments.train_thompson  # Etapa 3: treina e salva models/thompson.joblib
+uv run python -m bm.evaluation            # Etapa 4.1: tabela comparativa, 10 seeds (~1-2min)
+uv run python -m bm.golden_set            # Etapa 4.2: os 5 clientes e suas recomendações
 uv run python -m bm.exploration           # Etapa 3.4: gera as figuras em reports/figures/
-uv run pytest -q                          # testes
+uv run pytest -q                          # testes (25, também rodam no CI a cada push/PR)
 uv run mlflow-ui                          # abre a UI do MLflow (localhost:5000)
 uv run uvicorn bm.api:app --reload        # Etapa 5: sobe a API em localhost:8000
 ```
+
+Rode sempre **da raiz do repositório** — os scripts resolvem `data/` e `models/` por caminho
+relativo.
 
 Requer Python >= 3.13. O CSV bruto já está em `data/raw/`; se faltar, o notebook de EDA o baixa do
 Kaggle automaticamente (requer `~/.kaggle/kaggle.json`). A API exige `models/preprocessor.joblib`
@@ -270,29 +276,35 @@ continua mandando 34% do tráfego para `telephone`.
 
 <!-- responsável: Bertelli -->
 
-5 clientes do split de teste (últimos 20%, fora do que o bandit usou pra treinar), um por perfil
-sugerido no plano. `arm` é o canal que o banco realmente usou historicamente; `arm_recomendado` é
-o que o Thompson treinado escolheria hoje (pela média da posterior de cada braço, sem sortear —
-resultado reprodutível).
+5 clientes do split de teste (últimos 20%), um por perfil sugerido no plano. `arm` é o canal que o
+banco realmente usou historicamente; `arm_recomendado` é o que o Thompson treinado escolheria hoje
+(pela média da posterior de cada braço, sem sortear — resultado reprodutível).
 
-| Perfil | Canal real (histórico) | Canal recomendado | Justificativa |
-|---|---|---|---|
-| Jovem, sucesso em contato anterior | cellular | **telephone** | Alta propensão esperada (`poutcome=success`), mas o bandit não priorizou `cellular` para este cliente — contraintuitivo, ver "Limitações" abaixo. |
-| Aposentado, nunca contatado | cellular | cellular | Aposentados convertem acima da média mesmo sem contato prévio; recomendação bate com a expectativa. |
-| Blue-collar, casado, com empréstimo | cellular | cellular | Perfil historicamente menos propenso; o bandit ainda assim pende para `cellular` (taxa geral do canal é maior). |
-| Saturado de contatos (campaign ≥ 6) | cellular | cellular | Muitos contatos sem sinal de conversão; recomendação segue o canal de maior taxa histórica. |
-| Muitos campos "unknown" | cellular | cellular | Testa robustez do pipeline com dado incompleto — o preprocessor (`handle_unknown="ignore"`) não quebra. |
+**Estes 5 clientes são holdout de verdade:** `bm.experiments.train_thompson` treina só nos
+primeiros 80% cronológicos (`temporal_split`), então o bandit nunca viu nenhuma destas linhas.
+É o que faz o golden set valer como teste de regressão, e não só como ilustração.
+
+| Perfil | Canal real | Recomendado | Score `cellular` | Score `telephone` | Justificativa |
+|---|---|---|---|---|---|
+| Jovem, sucesso em contato anterior | cellular | **telephone** | +0,3518 | +0,3627 | Alta propensão confirmada (os dois scores são ~10× os demais), mas os braços empatam: 0,011 de diferença. Ver nota abaixo. |
+| Aposentado, nunca contatado | cellular | cellular | +0,0838 | +0,0076 | Aposentados convertem acima da média mesmo sem contato prévio; é a decisão mais folgada da tabela (0,076). |
+| Blue-collar, casado, com empréstimo | cellular | cellular | +0,0555 | +0,0367 | Perfil historicamente menos propenso; o bandit ainda assim pende para `cellular`. |
+| Saturado de contatos (campaign ≥ 6) | cellular | cellular | +0,0632 | +0,0479 | Muitos contatos sem sinal de conversão; segue o canal de maior taxa histórica. |
+| Muitos campos "unknown" | cellular | **telephone** | +0,0342 | +0,0463 | Testa robustez com dado incompleto — o preprocessor (`handle_unknown="ignore"`) não quebra. Outro caso de empate (0,012). |
 
 Gerar/atualizar esta tabela: `uv run python -m bm.golden_set`.
 
-**Sobre o primeiro caso ("alta propensão"), que recomenda `telephone`:** era uma dúvida em aberto,
-e a análise da Etapa 3.4 respondeu. Não é ruído de seed nem resíduo do bug de replay já corrigido:
-a vantagem de `cellular` sobre `telephone` é muito menor do que os 14,74% × 5,23% da tabela
-sugerem, porque aquela diferença está **confundida com o período** (ver "Limitações"). Restrito às
-linhas em que os dois canais coexistem na base, o `telephone` converte 13,18% contra 14,74% do
-`cellular` — 1,6 ponto de diferença, não 9,5. Com uma diferença dessa ordem, é esperado que um
-modelo contextual prefira `telephone` para parte dos clientes; a figura da crença posterior mostra
-justamente distribuições muito sobrepostas. A recomendação é defensável no vídeo.
+**Sobre os dois casos que recomendam `telephone`:** não é ruído de seed. A vantagem de `cellular`
+sobre `telephone` é muito menor do que os 14,74% × 5,23% da tabela da seção 5 sugerem, porque
+aquela diferença está **confundida com o período** (ver "Limitações"). Restrito às linhas em que
+os dois canais coexistem na base, o `telephone` converte 13,18% contra 14,74% do `cellular` — 1,6
+ponto de diferença, não 9,5. Os scores da tabela acima mostram isso de forma direta: nos dois casos
+em que o `telephone` ganha, a diferença é de ~0,011, contra 0,076 do caso mais decidido. São
+empates dentro da incerteza do modelo, e a figura da crença posterior
+(`reports/figures/posterior_thompson.png`) mostra as distribuições muito sobrepostas.
+
+É exatamente o comportamento que se espera de um bandit: onde ele tem convicção (aposentado), decide
+com folga; onde os braços empatam, ele continua testando os dois em vez de congelar numa regra fixa.
 
 ## 7. Arquitetura em nuvem
 
@@ -415,8 +427,8 @@ O `cellular` continua sendo o melhor braço — a diferença não desaparece em 
 canal foi usado, não uma propriedade do canal. Duas consequências honestas: (a) o ganho real de
 qualquer política sobre a regra fixa é menor do que a tabela sugere, porque o baseline `telephone`
 está medido no pior período; (b) é por isso que o Thompson contextual manda ~34% do tráfego para
-`telephone` mesmo no fim do replay, e por que a recomendação "contraintuitiva" do golden set é
-defensável.
+`telephone` mesmo no fim do replay, e por que as duas recomendações de `telephone` no golden set
+são defensáveis — nos dois casos os scores dos braços empatam dentro da incerteza do modelo.
 
 **A avaliação é offline por replay, e replay não é produção.** O rejection sampling só enxerga o
 desfecho da ação que de fato aconteceu no histórico; quando o bandit escolhe um braço diferente do
@@ -438,6 +450,7 @@ data/processed/
 docs/data-dictionary.md         # dicionário raw + processed
 notebooks/
   01-eda.ipynb                  # EDA, leakage e escolha dos braços (Etapa 1)          ✅
+  02-bandit.ipynb               # baseline × adaptativo, roda e mostra (Etapa 3)       ✅
 src/bm/
   data_prep.py                  # contrato de dados: load_raw/clean/build_bandit_frame  ✅
   tracking.py                   # configuração única do MLflow                          ✅
@@ -450,11 +463,13 @@ src/bm/
     bandit.py                   # EpsilonGreedy / ThompsonSampling (Etapa 3)            ✅
   experiments/
     train.py                    # replay/rejection sampling genérico (Etapa 3)          ✅
+    train_thompson.py           # treina e salva models/thompson.joblib (80% treino)    ✅
     run_thompson_replay.py      # 10 seeds Thompson + log MLflow (Etapa 4.1/7.1)        ✅
     run_epsilon_replay.py       # 10 seeds Epsilon-Greedy + log MLflow (Etapa 4.1/7.1)  ✅
+.github/workflows/ci.yml        # ruff + pytest em todo push/PR                         ✅
 models/
   preprocessor.joblib           # encoder ajustado no treino (Etapa 2)
-  thompson.joblib               # Thompson treinado no replay completo (Etapa 3)
+  thompson.joblib               # Thompson servido pela API — treinado só nos 1os 80%
   bandit_state.json             # estado do bandit servido pela API (Etapa 5) — não versionado
 reports/figures/                # 4 gráficos da análise de exploração (Etapa 3.4)        ✅
 tests/                          # pytest (Etapa 4.3)                                    ✅
